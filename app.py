@@ -10,7 +10,7 @@ import base64
 from pathlib import Path
 
 st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
-_CACHE_VERSION = "v4"   # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v5"   # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -247,7 +247,7 @@ def get_state_geojson(_geo, sfips: str) -> dict:
 
 @st.cache_data
 def build_fips_lookup(_geo):
-    inv = {v: k for k, v in STATE_FIPS.items()}
+    inv = {v: k for k, v in STATE_FIPS_ALL.items()}  # all 50 states — needed for NASS
     lk  = {}
     for feat in _geo["features"]:
         p = feat["properties"]
@@ -599,14 +599,24 @@ def build_nass_state_fig(df, crop, logo_50yr):
     return fig
 
 
-def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids):
+def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids, fips_lk):
     if state_df.empty:
         return None
 
     sfips = STATE_FIPS_ALL.get(state)
-    if sfips is None and not state_df.empty:
-        sfips = state_df["fips"].iloc[0][:2]
     if sfips is None:
+        return None
+
+    # Re-resolve FIPS from county names via GeoJSON lookup — same pattern as
+    # build_county_fig (RMA). This guarantees the FIPS codes match the feature
+    # "id" field that Plotly uses to locate polygons, rather than relying on
+    # API-provided codes which may differ from the GeoJSON.
+    state_df = state_df.copy()
+    state_df["fips"] = state_df["County"].apply(
+        lambda c: resolve_fips(state, c, fips_lk)
+    )
+    state_df = state_df.dropna(subset=["fips"])
+    if state_df.empty:
         return None
 
     state_geo = get_state_geojson(geo, sfips)  # cached
@@ -701,10 +711,10 @@ def build_nass_ranking_chart(state_df, state, crop):
 
 @st.cache_data(show_spinner=False)
 def cached_nass_county_fig(state: str, crop: str, year: int, cache_ver: str,
-                            _geo, _centroids, _logo_50yr):
+                            _geo, _centroids, _logo_50yr, _fips_lk):
     df_all   = load_nass_county(crop, year)
     state_df = df_all[df_all["State"] == state].copy()
-    return build_nass_county_fig(state_df, _geo, state, crop, _logo_50yr, _centroids)
+    return build_nass_county_fig(state_df, _geo, state, crop, _logo_50yr, _centroids, _fips_lk)
 
 
 @st.cache_data(show_spinner=False)
@@ -871,7 +881,7 @@ def main():
                     with st.spinner(f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"):
                         nass_county_fig = cached_nass_county_fig(
                             nass_state, nass_crop, 2025, _CACHE_VERSION,
-                            geo, centroids, logo_50yr
+                            geo, centroids, logo_50yr, fips_lk
                         )
                     if nass_county_fig is None:
                         st.info(f"County map not available for "
