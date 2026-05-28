@@ -4,11 +4,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 import urllib.request
+import urllib.parse
 import numpy as np
 import base64
 from pathlib import Path
 
-st.set_page_config(page_title="USDA RMA Yield and Production", layout="wide")
+st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -17,7 +18,18 @@ LOGO_50YR  = HERE / "assets" / "50 Year logo JSA.png"
 LOGO_TRANS = HERE / "assets" / "Transparent Smal logo.png"
 LOGO_FULL  = HERE / "assets" / "logo-full.png"
 
-# ── State lookups (corn/soy + wheat states) ───────────────────────────────────
+# ── NASS API ───────────────────────────────────────────────────────────────────
+NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
+NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
+NASS_CROP_PARAMS = {
+    "Corn":     {"commodity_desc": "CORN",    "util_practice_desc": "GRAIN"},
+    "Soybeans": {"commodity_desc": "SOYBEANS"},
+    "Wheat":    {"commodity_desc": "WHEAT",   "class_desc": "ALL CLASSES"},
+    "Sorghum":  {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+}
+
+# ── State lookups ─────────────────────────────────────────────────────────────
+# RMA subset (used for county FIPS name-lookup only)
 STATE_FIPS = {
     "AL": "01", "AR": "05", "CO": "08", "GA": "13", "IA": "19",
     "ID": "16", "IL": "17", "IN": "18", "KS": "20", "KY": "21",
@@ -28,34 +40,59 @@ STATE_FIPS = {
     "WY": "56",
 }
 
+# Full 50-state FIPS — used for NASS county map lookups
+STATE_FIPS_ALL = {
+    "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06",
+    "CO": "08", "CT": "09", "DE": "10", "FL": "12", "GA": "13",
+    "HI": "15", "ID": "16", "IL": "17", "IN": "18", "IA": "19",
+    "KS": "20", "KY": "21", "LA": "22", "ME": "23", "MD": "24",
+    "MA": "25", "MI": "26", "MN": "27", "MS": "28", "MO": "29",
+    "MT": "30", "NE": "31", "NV": "32", "NH": "33", "NJ": "34",
+    "NM": "35", "NY": "36", "NC": "37", "ND": "38", "OH": "39",
+    "OK": "40", "OR": "41", "PA": "42", "RI": "44", "SC": "45",
+    "SD": "46", "TN": "47", "TX": "48", "UT": "49", "VT": "50",
+    "VA": "51", "WA": "53", "WV": "54", "WI": "55", "WY": "56",
+}
+
 ABBR_TO_NAME = {
-    "AL": "Alabama",       "AR": "Arkansas",       "CO": "Colorado",
-    "GA": "Georgia",       "IA": "Iowa",            "ID": "Idaho",
-    "IL": "Illinois",      "IN": "Indiana",         "KS": "Kansas",
-    "KY": "Kentucky",      "MD": "Maryland",        "MI": "Michigan",
-    "MN": "Minnesota",     "MO": "Missouri",        "MS": "Mississippi",
-    "MT": "Montana",       "NC": "North Carolina",  "ND": "North Dakota",
-    "NE": "Nebraska",      "OH": "Ohio",            "OK": "Oklahoma",
-    "OR": "Oregon",        "PA": "Pennsylvania",    "SC": "South Carolina",
-    "SD": "South Dakota",  "TN": "Tennessee",       "TX": "Texas",
-    "VA": "Virginia",      "WA": "Washington",      "WI": "Wisconsin",
-    "WY": "Wyoming",
+    "AL": "Alabama",        "AK": "Alaska",         "AZ": "Arizona",
+    "AR": "Arkansas",       "CA": "California",     "CO": "Colorado",
+    "CT": "Connecticut",    "DE": "Delaware",       "FL": "Florida",
+    "GA": "Georgia",        "HI": "Hawaii",         "ID": "Idaho",
+    "IL": "Illinois",       "IN": "Indiana",        "IA": "Iowa",
+    "KS": "Kansas",         "KY": "Kentucky",       "LA": "Louisiana",
+    "ME": "Maine",          "MD": "Maryland",       "MA": "Massachusetts",
+    "MI": "Michigan",       "MN": "Minnesota",      "MS": "Mississippi",
+    "MO": "Missouri",       "MT": "Montana",        "NE": "Nebraska",
+    "NV": "Nevada",         "NH": "New Hampshire",  "NJ": "New Jersey",
+    "NM": "New Mexico",     "NY": "New York",       "NC": "North Carolina",
+    "ND": "North Dakota",   "OH": "Ohio",           "OK": "Oklahoma",
+    "OR": "Oregon",         "PA": "Pennsylvania",   "RI": "Rhode Island",
+    "SC": "South Carolina", "SD": "South Dakota",   "TN": "Tennessee",
+    "TX": "Texas",          "UT": "Utah",           "VT": "Vermont",
+    "VA": "Virginia",       "WA": "Washington",     "WV": "West Virginia",
+    "WI": "Wisconsin",      "WY": "Wyoming",
 }
 
 STATE_CENTROIDS = {
-    "AL": (-86.8,  32.8), "AR": (-92.4,  34.9), "CO": (-105.5, 39.0),
-    "GA": (-83.4,  32.7), "IA": (-93.1,  42.0), "ID": (-114.5, 44.4),
-    "IL": (-89.2,  40.0), "IN": (-86.3,  40.3), "KS": (-98.4,  38.5),
-    "KY": (-84.9,  37.5), "MD": (-76.8,  39.0), "MI": (-84.5,  44.3),
-    "MN": (-94.3,  46.4), "MO": (-92.5,  38.4), "MS": (-89.7,  32.7),
-    "MT": (-110.5, 46.9), "NC": (-79.4,  35.6), "ND": (-100.5, 47.5),
-    "NE": (-99.9,  41.5), "OH": (-82.8,  40.4), "OK": (-97.5,  35.5),
-    "OR": (-120.6, 44.1), "PA": (-77.2,  40.9), "SC": (-80.9,  33.8),
-    "SD": (-100.2, 44.4), "TN": (-86.7,  35.8), "TX": (-99.3,  31.5),
-    "VA": (-78.7,  37.5), "WA": (-120.5, 47.4), "WI": (-89.8,  44.5),
+    "AL": (-86.8,  32.8), "AR": (-92.4,  34.9), "AZ": (-111.6, 34.3),
+    "CA": (-119.4, 37.2), "CO": (-105.5, 39.0), "CT": (-72.7,  41.6),
+    "DE": (-75.5,  38.9), "FL": (-81.5,  27.8), "GA": (-83.4,  32.7),
+    "IA": (-93.1,  42.0), "ID": (-114.5, 44.4), "IL": (-89.2,  40.0),
+    "IN": (-86.3,  40.3), "KS": (-98.4,  38.5), "KY": (-84.9,  37.5),
+    "LA": (-92.1,  30.5), "MD": (-76.8,  39.0), "ME": (-69.2,  44.7),
+    "MI": (-84.5,  44.3), "MN": (-94.3,  46.4), "MO": (-92.5,  38.4),
+    "MS": (-89.7,  32.7), "MT": (-110.5, 46.9), "NC": (-79.4,  35.6),
+    "ND": (-100.5, 47.5), "NE": (-99.9,  41.5), "NJ": (-74.4,  40.1),
+    "NM": (-106.0, 34.5), "NY": (-75.5,  42.9), "OH": (-82.8,  40.4),
+    "OK": (-97.5,  35.5), "OR": (-120.6, 44.1), "PA": (-77.2,  40.9),
+    "SC": (-80.9,  33.8), "SD": (-100.2, 44.4), "TN": (-86.7,  35.8),
+    "TX": (-99.3,  31.5), "UT": (-111.1, 39.3), "VA": (-78.7,  37.5),
+    "WA": (-120.5, 47.4), "WI": (-89.8,  44.5), "WV": (-80.4,  38.7),
     "WY": (-107.6, 43.0),
 }
 
+# ── RMA metric mappings ───────────────────────────────────────────────────────
 METRIC_COL = {
     "Production":            "Reported Production",
     "Production Acres":      "Reported Production Acres",
@@ -75,8 +112,27 @@ COLOR_SCALE = {
     "Yield": "RdYlGn",      "Prevent Planted Acres": "OrRd",
 }
 
-# ── Data ───────────────────────────────────────────────────────────────────────
+DISPLAY_DIVISOR = {
+    "Production": 1_000_000, "Production Acres": 100_000,
+    "Yield": 1,               "Prevent Planted Acres": 100_000,
+}
+DISPLAY_UNIT = {
+    "Production": "M bu",     "Production Acres": "×100K ac",
+    "Yield": "bu/ac",          "Prevent Planted Acres": "×100K ac",
+}
 
+# ── JPSI brand palette ────────────────────────────────────────────────────────
+DARK    = "#0e1614"
+PANEL   = "#162019"
+SURFACE = "#1e2e2a"
+BORDER  = "#243328"
+TEXT    = "#e4e8f0"
+MUTED   = "#7a9990"
+ACCENT  = "#4ade80"
+LAND    = "#1a2720"
+
+
+# ── RMA Data ──────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
     out = {}
@@ -84,37 +140,73 @@ def load_data():
         try:
             df = pd.read_excel(DATA_PATH, sheet_name=crop)
         except Exception:
-            continue  # sheet not present yet — skip gracefully
-        df.columns = df.columns.str.strip()
-        df["State"]   = df["State"].str.strip()
-        df["County"]  = df["County"].str.strip()
+            continue
+        df.columns  = df.columns.str.strip()
+        df["State"]    = df["State"].str.strip()
+        df["County"]   = df["County"].str.strip()
         df["Practice"] = df["Practice"].str.strip()
         df["PG"] = np.where(
-            df["Practice"].str.startswith("Irrigated"),     "Irrigated",
+            df["Practice"].str.startswith("Irrigated"),          "Irrigated",
             np.where(df["Practice"].str.startswith("Non-Irrigated"), "Non-Irrigated", "Invalid"),
         )
         df = df[df["PG"] != "Invalid"].copy()
-        # Wheat carries a Type column; normalise it
         if "Type" in df.columns:
             df["Type"] = df["Type"].str.strip()
         for col in METRIC_COL.values():
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-        # RMA exports include multiple insurance-plan sub-tiers (Buy-Up, CAT, etc.)
-        # AND practice variants (Irrigated, Irrigated(Oc), Irrigated(Ot), etc.) per
-        # county with no plan-code column retained.  Dedup on the NORMALISED practice
-        # group (PG) so all variants of the same practice collapse to one row — the
-        # one with the highest Reported Production, which is always the main Buy-Up
-        # coverage row.
-        key_cols = [c for c in ["State", "County", "PG", "Type", "Yield Year"]
-                    if c in df.columns]
+        key_cols = [c for c in ["State", "County", "PG", "Type", "Yield Year"] if c in df.columns]
         idx_keep = df.groupby(key_cols)["Reported Production"].idxmax()
         df = df.loc[idx_keep].reset_index(drop=True)
-
         out[crop] = df
     return out
 
 
+# ── NASS Data ─────────────────────────────────────────────────────────────────
+@st.cache_data
+def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
+    params = {
+        "key":                 NASS_API_KEY,
+        "source_desc":         "SURVEY",
+        "sector_desc":         "CROPS",
+        "statisticcat_desc":   "PRODUCTION",
+        "unit_desc":           "BU",
+        "agg_level_desc":      "COUNTY",
+        "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
+        "year":                str(year),
+        "format":              "JSON",
+    }
+    params.update(NASS_CROP_PARAMS[crop])
+    url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            raw = json.load(r)
+    except Exception as e:
+        st.warning(f"NASS API error for {crop}: {e}")
+        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
+
+    records = raw.get("data", [])
+    if not records:
+        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
+
+    df = pd.DataFrame(records)
+    df = df[["state_alpha", "county_name", "state_fips_code", "county_ansi", "Value"]].copy()
+
+    # Drop state-level aggregate rows
+    df = df[~df["county_ansi"].isin(["998", "000", "999"])]
+
+    df["Production"] = pd.to_numeric(
+        df["Value"].str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    ).fillna(0)
+
+    df["fips"]   = df["state_fips_code"].str.zfill(2) + df["county_ansi"].str.zfill(3)
+    df["State"]  = df["state_alpha"].str.strip()
+    df["County"] = df["county_name"].str.strip().str.title()
+
+    return df[["State", "County", "fips", "Production"]].reset_index(drop=True)
+
+
+# ── GeoJSON & lookups ─────────────────────────────────────────────────────────
 @st.cache_data
 def load_geojson():
     url = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
@@ -125,7 +217,7 @@ def load_geojson():
 @st.cache_data
 def build_fips_lookup(_geo):
     inv = {v: k for k, v in STATE_FIPS.items()}
-    lk = {}
+    lk  = {}
     for feat in _geo["features"]:
         p = feat["properties"]
         if p["STATE"] not in inv:
@@ -152,8 +244,8 @@ def resolve_fips(state, county, lk):
 
 def _poly_centroid_area(coords):
     x, y = coords[:, 0], coords[:, 1]
-    a = x[:-1] * y[1:] - x[1:] * y[:-1]
-    A = 0.5 * a.sum()
+    a    = x[:-1] * y[1:] - x[1:] * y[:-1]
+    A    = 0.5 * a.sum()
     area = abs(A)
     if area < 1e-10:
         return float(x.mean()), float(y.mean()), area
@@ -186,16 +278,7 @@ def build_centroid_lookup(_geo):
     return centroids
 
 
-DISPLAY_DIVISOR = {
-    "Production": 1_000_000, "Production Acres": 100_000,
-    "Yield": 1,               "Prevent Planted Acres": 100_000,
-}
-DISPLAY_UNIT = {
-    "Production": "M bu",       "Production Acres": "×100K ac",
-    "Yield": "bu/ac",            "Prevent Planted Acres": "×100K ac",
-}
-
-
+# ── Formatting helpers ────────────────────────────────────────────────────────
 def format_label(val, metric):
     if pd.isna(val) or val == 0:
         return ""
@@ -217,8 +300,13 @@ def format_state_label(val, metric):
     return f"{val / 100_000:.1f}"
 
 
-# ── Aggregation ────────────────────────────────────────────────────────────────
+def format_nass_label(val):
+    if pd.isna(val) or val == 0:
+        return ""
+    return f"{val / 1_000_000:.1f}"
 
+
+# ── Aggregation ───────────────────────────────────────────────────────────────
 def filter_practice(df, practice):
     return df if practice == "All" else df[df["PG"] == practice]
 
@@ -236,24 +324,15 @@ def agg_data(df, practice, metric, group_cols):
     return result
 
 
-# ── JPSI brand palette ────────────────────────────────────────────────────────
-DARK    = "#0e1614"
-PANEL   = "#162019"
-SURFACE = "#1e2e2a"
-BORDER  = "#243328"
-TEXT    = "#e4e8f0"
-MUTED   = "#7a9990"
-ACCENT  = "#4ade80"
-LAND    = "#1a2720"
-
-
+# ── Logo helpers ──────────────────────────────────────────────────────────────
 @st.cache_data
 def load_logo(path):
     with open(path, "rb") as f:
         return "data:image/png;base64," + base64.b64encode(f.read()).decode()
 
 
-def _add_logo(fig, logo_src, size=0.13, opacity=0.92, x=0.99, y=0.01, yanchor="bottom", layer="above"):
+def _add_logo(fig, logo_src, size=0.13, opacity=0.92, x=0.99, y=0.01,
+              yanchor="bottom", layer="above"):
     fig.add_layout_image(
         source=logo_src, xref="paper", yref="paper",
         x=x, y=y, xanchor="right", yanchor=yanchor,
@@ -262,7 +341,154 @@ def _add_logo(fig, logo_src, size=0.13, opacity=0.92, x=0.99, y=0.01, yanchor="b
     )
 
 
-# ── Figures ────────────────────────────────────────────────────────────────────
+def _base_layout(title):
+    return dict(
+        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+        font=dict(color=TEXT, family="Arial"),
+        title=dict(text=title, font=dict(size=15, color=ACCENT)),
+        margin=dict(l=0, r=0, t=50, b=0),
+    )
+
+
+# ── Shared county-label placement ────────────────────────────────────────────
+def _place_labels(fig, fips_list, value_series, centroids, metric_or_fn):
+    """Add adaptive Scattergeo text labels to a county fig.
+    metric_or_fn: RMA metric string OR callable(val)->str for NASS.
+    """
+    county_areas = [centroids[f][2] for f in fips_list if f in centroids]
+    if county_areas:
+        avg_area   = float(np.mean(county_areas))
+        label_size = int(np.clip(9 + np.log(max(avg_area, 0.01) / 0.05) * 2.0, 9, 15))
+    else:
+        avg_area   = 0.1
+        label_size = 10
+
+    fmt_fn = (lambda v: format_label(v, metric_or_fn)) if isinstance(metric_or_fn, str) \
+             else metric_or_fn
+
+    candidates = []
+    for fips, val in zip(fips_list, value_series):
+        label = fmt_fn(val)
+        if label and fips in centroids:
+            cx, cy, area = centroids[fips]
+            candidates.append((area, cx, cy, label))
+    candidates.sort(reverse=True)
+
+    min_sep = float(np.clip(0.15 + avg_area * 0.8, 0.20, 0.45))
+    placed, lons, lats, texts = [], [], [], []
+    for area, cx, cy, label in candidates:
+        if not any((cx - px) ** 2 + (cy - py) ** 2 < min_sep ** 2 for px, py in placed):
+            placed.append((cx, cy))
+            lons.append(cx); lats.append(cy); texts.append(label)
+
+    if lons:
+        fig.add_trace(go.Scattergeo(
+            lon=lons, lat=lats, text=texts, mode="text",
+            textfont=dict(color="#aaaaaa", size=label_size, family="Arial Black"),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+
+# ── RMA figure builders ───────────────────────────────────────────────────────
+def build_state_fig(agg, metric, crop_label, practice, logo_50yr):
+    col       = METRIC_COL[metric]
+    unit      = METRIC_UNIT[metric]
+    fmt       = METRIC_FMT[metric]
+    disp_unit = DISPLAY_UNIT[metric]
+    df = agg.copy()
+    df["StateName"] = df["State"].map(ABBR_TO_NAME)
+
+    title_text = (
+        f"{crop_label} — {metric} | Practice: {practice}"
+        f"<br><sup>Map labels in {disp_unit}</sup>"
+    )
+    fig = px.choropleth(
+        df, locations="State", locationmode="USA-states", color=col,
+        scope="usa", color_continuous_scale=COLOR_SCALE[metric],
+        hover_name="StateName",
+        hover_data={col: f":{fmt}", "State": False},
+        labels={col: f"{metric} ({unit})"},
+    )
+    fig.update_layout(
+        **_base_layout(title_text), height=520,
+        geo=dict(showlakes=False, bgcolor=DARK, landcolor=LAND, showland=True, showframe=False),
+        coloraxis_colorbar=dict(
+            title=dict(text=f"{metric}<br>({unit})", font=dict(color=TEXT)),
+            tickfont=dict(color=TEXT),
+        ),
+    )
+    lons, lats, texts = [], [], []
+    for _, row in df.iterrows():
+        label = format_state_label(row[col], metric)
+        if label and row["State"] in STATE_CENTROIDS:
+            lon, lat = STATE_CENTROIDS[row["State"]]
+            lons.append(lon); lats.append(lat); texts.append(label)
+    if lons:
+        fig.add_trace(go.Scattergeo(
+            lon=lons, lat=lats, text=texts, mode="text", geo="geo",
+            textfont=dict(color="#cccccc", size=11, family="Arial Black"),
+            showlegend=False, hoverinfo="skip",
+        ))
+    _add_logo(fig, logo_50yr, size=0.30, opacity=1.0)
+    return fig
+
+
+def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, practice, logo_50yr):
+    col   = METRIC_COL[metric]
+    unit  = METRIC_UNIT[metric]
+    fmt   = METRIC_FMT[metric]
+    sfips = STATE_FIPS.get(state)
+    if sfips is None:
+        return None
+
+    df = agg.copy()
+    df["fips"] = df["County"].apply(lambda c: resolve_fips(state, c, fips_lk))
+    df = df.dropna(subset=["fips"])
+
+    state_geo = {
+        "type": "FeatureCollection",
+        "features": [f for f in geo["features"] if f["properties"]["STATE"] == sfips],
+    }
+    state_name = ABBR_TO_NAME.get(state, state)
+    all_fips   = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
+                  for f in state_geo["features"]]
+
+    z_vals = df[col].tolist()
+    z_min  = df[col].min() if z_vals else 0
+    z_max  = df[col].max() if z_vals else 1
+    if z_min == z_max:
+        z_min = 0
+
+    county_line = dict(color="#3d5248", width=0.8)
+    fig = go.Figure()
+    fig.add_trace(go.Choropleth(
+        geojson=state_geo, locations=all_fips, z=[0] * len(all_fips),
+        colorscale=[[0, PANEL], [1, PANEL]], showscale=False,
+        marker=dict(line=county_line), hoverinfo="skip",
+    ))
+    fig.add_trace(go.Choropleth(
+        geojson=state_geo, locations=df["fips"].tolist(), z=z_vals,
+        colorscale=COLOR_SCALE[metric], zmin=z_min, zmax=z_max,
+        colorbar=dict(
+            title=dict(text=f"{metric}<br>({unit})", font=dict(color=TEXT)),
+            tickfont=dict(color=TEXT),
+        ),
+        marker=dict(line=county_line),
+        text=df["County"].tolist(),
+        hovertemplate=f"%{{text}}: %{{z:{fmt}}}<extra></extra>",
+    ))
+
+    disp_unit  = DISPLAY_UNIT[metric]
+    title_text = (
+        f"{crop_label} — {metric} | {state_name} Counties | Practice: {practice}"
+        f"<br><sup>Map labels in {disp_unit}</sup>"
+    )
+    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_layout(**_base_layout(title_text), height=620)
+    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    _place_labels(fig, df["fips"].tolist(), df[col].tolist(), centroids, metric)
+    return fig
+
 
 def build_ranking_chart(agg, metric, state):
     col        = METRIC_COL[metric]
@@ -270,9 +496,9 @@ def build_ranking_chart(agg, metric, state):
     divisor    = DISPLAY_DIVISOR[metric]
     disp_unit  = DISPLAY_UNIT[metric]
 
-    ranked  = agg.dropna(subset=[col]).sort_values(col, ascending=True)
-    raw_avg = ranked[col].mean()
-    x_vals  = ranked[col] / divisor
+    ranked   = agg.dropna(subset=[col]).sort_values(col, ascending=True)
+    raw_avg  = ranked[col].mean()
+    x_vals   = ranked[col] / divisor
     avg_disp = raw_avg / divisor
 
     colors = [ACCENT if v >= raw_avg else "#e05252" for v in ranked[col]]
@@ -305,46 +531,30 @@ def build_ranking_chart(agg, metric, state):
     return fig
 
 
-def _base_layout(title):
-    return dict(
-        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
-        font=dict(color=TEXT, family="Arial"),
-        title=dict(text=title, font=dict(size=15, color=ACCENT)),
-        margin=dict(l=0, r=0, t=50, b=0),
-    )
+# ── NASS figure builders ──────────────────────────────────────────────────────
+def build_nass_state_fig(df, crop, logo_50yr):
+    agg = df.groupby("State")["Production"].sum().reset_index()
+    agg["StateName"] = agg["State"].map(ABBR_TO_NAME)
 
-
-def build_state_fig(agg, metric, crop_label, practice, logo_50yr):
-    col       = METRIC_COL[metric]
-    unit      = METRIC_UNIT[metric]
-    fmt       = METRIC_FMT[metric]
-    disp_unit = DISPLAY_UNIT[metric]
-    df = agg.copy()
-    df["StateName"] = df["State"].map(ABBR_TO_NAME)
-
-    title_text = (
-        f"{crop_label} — {metric} | Practice: {practice}"
-        f"<br><sup>Map labels in {disp_unit}</sup>"
-    )
+    title_text = f"NASS 2025 {crop} — Production<br><sup>Map labels in M bu</sup>"
     fig = px.choropleth(
-        df, locations="State", locationmode="USA-states", color=col,
-        scope="usa", color_continuous_scale=COLOR_SCALE[metric],
+        agg, locations="State", locationmode="USA-states", color="Production",
+        scope="usa", color_continuous_scale="YlOrBr",
         hover_name="StateName",
-        hover_data={col: f":{fmt}", "State": False},
-        labels={col: f"{metric} ({unit})"},
+        hover_data={"Production": ":,.0f", "State": False},
+        labels={"Production": "Production (bu)"},
     )
     fig.update_layout(
         **_base_layout(title_text), height=520,
         geo=dict(showlakes=False, bgcolor=DARK, landcolor=LAND, showland=True, showframe=False),
         coloraxis_colorbar=dict(
-            title=dict(text=f"{metric}<br>({unit})", font=dict(color=TEXT)),
+            title=dict(text="Production<br>(bu)", font=dict(color=TEXT)),
             tickfont=dict(color=TEXT),
         ),
     )
-    # State data labels
     lons, lats, texts = [], [], []
-    for _, row in df.iterrows():
-        label = format_state_label(row[col], metric)
+    for _, row in agg.iterrows():
+        label = format_nass_label(row["Production"])
         if label and row["State"] in STATE_CENTROIDS:
             lon, lat = STATE_CENTROIDS[row["State"]]
             lons.append(lon); lats.append(lat); texts.append(label)
@@ -358,99 +568,101 @@ def build_state_fig(agg, metric, crop_label, practice, logo_50yr):
     return fig
 
 
-def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, practice, logo_50yr):
-    col   = METRIC_COL[metric]
-    unit  = METRIC_UNIT[metric]
-    fmt   = METRIC_FMT[metric]
-    sfips = STATE_FIPS.get(state)
+def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids):
+    if state_df.empty:
+        return None
 
+    sfips = STATE_FIPS_ALL.get(state)
+    if sfips is None and not state_df.empty:
+        sfips = state_df["fips"].iloc[0][:2]
     if sfips is None:
-        return None  # state not in FIPS table — caller handles this
-
-    df = agg.copy()
-    df["fips"] = df["County"].apply(lambda c: resolve_fips(state, c, fips_lk))
-    df = df.dropna(subset=["fips"])
+        return None
 
     state_geo = {
         "type": "FeatureCollection",
         "features": [f for f in geo["features"] if f["properties"]["STATE"] == sfips],
     }
-    state_name = ABBR_TO_NAME.get(state, state)
-    all_fips   = [
-        f["properties"]["STATE"] + f["properties"]["COUNTY"]
-        for f in state_geo["features"]
-    ]
+    all_fips = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
+                for f in state_geo["features"]]
 
-    z_vals = df[col].tolist()
-    z_min  = df[col].min() if z_vals else 0
-    z_max  = df[col].max() if z_vals else 1
+    z_vals = state_df["Production"].tolist()
+    z_min  = state_df["Production"].min()
+    z_max  = state_df["Production"].max()
     if z_min == z_max:
         z_min = 0
 
     county_line = dict(color="#3d5248", width=0.8)
     fig = go.Figure()
-
     fig.add_trace(go.Choropleth(
         geojson=state_geo, locations=all_fips, z=[0] * len(all_fips),
         colorscale=[[0, PANEL], [1, PANEL]], showscale=False,
         marker=dict(line=county_line), hoverinfo="skip",
     ))
     fig.add_trace(go.Choropleth(
-        geojson=state_geo, locations=df["fips"].tolist(), z=z_vals,
-        colorscale=COLOR_SCALE[metric], zmin=z_min, zmax=z_max,
+        geojson=state_geo, locations=state_df["fips"].tolist(), z=z_vals,
+        colorscale="YlOrBr", zmin=z_min, zmax=z_max,
         colorbar=dict(
-            title=dict(text=f"{metric}<br>({unit})", font=dict(color=TEXT)),
+            title=dict(text="Production<br>(bu)", font=dict(color=TEXT)),
             tickfont=dict(color=TEXT),
         ),
         marker=dict(line=county_line),
-        text=df["County"].tolist(),
-        hovertemplate=f"%{{text}}: %{{z:{fmt}}}<extra></extra>",
+        text=state_df["County"].tolist(),
+        hovertemplate="%{text}: %{z:,.0f} bu<extra></extra>",
     ))
 
-    disp_unit  = DISPLAY_UNIT[metric]
+    state_name = ABBR_TO_NAME.get(state, state)
     title_text = (
-        f"{crop_label} — {metric} | {state_name} Counties | Practice: {practice}"
-        f"<br><sup>Map labels in {disp_unit}</sup>"
+        f"NASS 2025 {crop} — Production | {state_name} Counties"
+        f"<br><sup>Map labels in M bu</sup>"
     )
     fig.update_geos(fitbounds="locations", visible=False)
     fig.update_layout(**_base_layout(title_text), height=620)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    _place_labels(fig, state_df["fips"].tolist(), state_df["Production"].tolist(),
+                  centroids, format_nass_label)
+    return fig
 
-    # Adaptive font size
-    county_areas = [centroids[f][2] for f in all_fips if f in centroids]
-    if county_areas:
-        avg_area   = float(np.mean(county_areas))
-        label_size = int(np.clip(9 + np.log(max(avg_area, 0.01) / 0.05) * 2.0, 9, 15))
-    else:
-        avg_area   = 0.1
-        label_size = 10
 
-    candidates = []
-    for _, row in df.iterrows():
-        fips  = row["fips"]
-        label = format_label(row[col], metric)
-        if label and fips in centroids:
-            cx, cy, area = centroids[fips]
-            candidates.append((area, cx, cy, label))
-    candidates.sort(reverse=True)
+def build_nass_ranking_chart(state_df, state, crop):
+    ranked     = state_df.dropna(subset=["Production"]).sort_values("Production", ascending=True)
+    state_name = ABBR_TO_NAME.get(state, state)
+    raw_avg    = ranked["Production"].mean()
+    x_vals     = ranked["Production"] / 1_000_000
+    avg_disp   = raw_avg / 1_000_000
 
-    min_sep = float(np.clip(0.15 + avg_area * 0.8, 0.20, 0.45))
-    placed, lons, lats, texts = [], [], [], []
-    for area, cx, cy, label in candidates:
-        if not any((cx - px) ** 2 + (cy - py) ** 2 < min_sep ** 2 for px, py in placed):
-            placed.append((cx, cy)); lons.append(cx); lats.append(cy); texts.append(label)
+    colors = [ACCENT if v >= raw_avg else "#e05252" for v in ranked["Production"]]
+    labels = [f"{v:,.2f}" for v in x_vals]
 
-    if lons:
-        fig.add_trace(go.Scattergeo(
-            lon=lons, lat=lats, text=texts, mode="text",
-            textfont=dict(color="#aaaaaa", size=label_size, family="Arial Black"),
-            showlegend=False, hoverinfo="skip",
-        ))
+    fig = go.Figure(go.Bar(
+        x=x_vals, y=ranked["County"], orientation="h",
+        marker_color=colors, marker_line_width=0,
+        text=labels, textposition="outside",
+        textfont=dict(color=TEXT, size=8), cliponaxis=False,
+        hovertemplate="%{y}: %{x:,.2f} M bu<extra></extra>",
+    ))
+    fig.add_vline(
+        x=avg_disp, line_color="#f5a623", line_width=1.5, line_dash="dash",
+        annotation_text=f"  Avg: {avg_disp:,.2f} M bu",
+        annotation_position="top left",
+        annotation_font=dict(color="#f5a623", size=10),
+    )
+    fig.update_layout(
+        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+        font=dict(color=TEXT, family="Arial"),
+        title=dict(
+            text=f"{state_name} County Rankings — {crop} Production (NASS 2025)",
+            font=dict(size=14, color=ACCENT),
+        ),
+        height=max(380, len(ranked) * 22 + 80),
+        margin=dict(l=10, r=90, t=50, b=20), bargap=0.18,
+        xaxis=dict(title="Production (M bu)", gridcolor=BORDER,
+                   tickfont=dict(color=MUTED), title_font=dict(color=MUTED), zeroline=False),
+        yaxis=dict(gridcolor=BORDER, tickfont=dict(color=TEXT, size=9), automargin=True),
+    )
     return fig
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
-
 def main():
     st.markdown(
         f"""
@@ -466,35 +678,38 @@ def main():
         }}
         div[data-baseweb="popover"] * {{ background-color: {PANEL} !important; color: {TEXT} !important; }}
         [data-testid="metric-container"] {{
-            background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; padding: 12px 16px;
+            background-color: {PANEL}; border: 1px solid {BORDER};
+            border-radius: 8px; padding: 12px 16px;
         }}
         [data-testid="stMetricValue"] {{ color: {ACCENT} !important; font-size: 1.35rem; font-weight: 700; }}
-        [data-testid="stMetricLabel"] {{ color: {MUTED} !important; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }}
+        [data-testid="stMetricLabel"] {{
+            color: {MUTED} !important; font-size: 0.78rem;
+            text-transform: uppercase; letter-spacing: 0.06em;
+        }}
         [data-testid="stExpander"] {{ background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}
         [data-testid="stDataFrame"] {{ background-color: {PANEL}; }}
         hr {{ border-color: {BORDER}; }}
         [data-testid="stSpinner"] p {{ color: {MUTED} !important; }}
+        .stTabs [data-baseweb="tab-list"] {{ background-color: {PANEL}; border-radius: 6px 6px 0 0; gap: 4px; }}
+        .stTabs [data-baseweb="tab"] {{ color: {MUTED}; font-size: 0.92rem; padding: 8px 20px; }}
+        .stTabs [aria-selected="true"] {{ color: {ACCENT} !important; border-bottom: 2px solid {ACCENT} !important; }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.title("USDA RMA Yield and Production")
+    st.title("USDA County Production Dashboard")
     st.markdown(
-        f"""<p style='color:{MUTED};font-size:0.80rem;margin-top:-10px;margin-bottom:4px;line-height:1.5;'>
-        ℹ️ Figures represent <b style='color:{TEXT};'>RMA Estimated Production</b>
-        (insured acres × projected yield) and may differ from
-        <b style='color:{TEXT};'>USDA NASS</b> final production figures,
-        which are based on post-harvest surveys of all acres.
+        f"""<p style='color:{MUTED};font-size:0.80rem;margin-top:-10px;margin-bottom:6px;line-height:1.6;'>
+        ℹ️ <b style='color:{TEXT};'>NASS tab</b>: USDA survey-based final production figures (post-harvest, all acres). &nbsp;|&nbsp;
+        <b style='color:{TEXT};'>RMA tab</b>: Estimated production for federally insured acres (insured acres × projected yield) — figures will differ from NASS.
         </p>""",
         unsafe_allow_html=True,
     )
 
-    if "sel_state" not in st.session_state:
-        st.session_state.sel_state = None
-
+    # Load base resources shared across both tabs
     with st.spinner("Loading..."):
-        data       = load_data()
+        rma_data   = load_data()
         geo        = load_geojson()
         fips_lk    = build_fips_lookup(geo)
         centroids  = build_centroid_lookup(geo)
@@ -514,128 +729,256 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # ── Controls ───────────────────────────────────────────────────────────────
-    crops_available = [c for c in ["Corn", "Soybeans", "Wheat"] if c in data]
+    tab_nass, tab_rma = st.tabs(["🌾  NASS Production", "📋  RMA"])
 
-    # Row 1: crop / metric / practice / [wheat type] / state drill-down / refresh
-    # Wheat type column is always rendered; hidden via empty() when not wheat.
-    c1, c2, c3, c4, c5, c6 = st.columns([1, 1.2, 1.2, 1.2, 1.5, 0.6])
+    # ══════════════════════════════════════════════════════════════════════════
+    # NASS TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_nass:
+        if "nass_sel_state" not in st.session_state:
+            st.session_state.nass_sel_state = None
 
-    with c1:
-        crop = st.selectbox("Crop", crops_available)
-    with c2:
-        metric = st.selectbox("Metric", list(METRIC_COL.keys()))
-    with c3:
-        practice = st.selectbox("Practice", ["All", "Irrigated", "Non-Irrigated"])
-    with c4:
-        if crop == "Wheat":
-            wheat_types = sorted(
-                t for t in data["Wheat"]["Type"].dropna().unique()
-                if "khor" not in t.lower()
-            )
-            default_wt  = next((i for i, t in enumerate(wheat_types) if "winter" in t.lower()), 0)
-            wheat_type  = st.selectbox("Wheat Type ✱", wheat_types, index=default_wt)
-        else:
-            wheat_type = None
-    with c6:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-
-    # Build working dataframe — apply wheat type filter before anything else
-    df = data[crop].copy()
-    if crop == "Wheat" and wheat_type:
-        df = df[df["Type"] == wheat_type]
-
-    # Crop label used in chart titles
-    crop_label = f"Wheat — {wheat_type}" if crop == "Wheat" else crop
-
-    with c5:
-        states_avail = sorted(df["State"].unique())
-        state_opts   = ["— US Overview —"] + [
-            f"{a}  —  {ABBR_TO_NAME.get(a, a)}" for a in states_avail
-        ]
-        default_idx = 0
-        if st.session_state.sel_state:
-            try:
-                default_idx = states_avail.index(st.session_state.sel_state) + 1
-            except ValueError:
-                default_idx = 0
-        sel = st.selectbox("State Drill-Down", state_opts, index=default_idx)
-        st.session_state.sel_state = None if sel.startswith("—") else sel[:2]
-
-    col  = METRIC_COL[metric]
-    unit = METRIC_UNIT[metric]
-    fmt  = METRIC_FMT[metric]
-
-    # ── Summary metrics ────────────────────────────────────────────────────────
-    scope_df = filter_practice(df, practice)
-    if st.session_state.sel_state:
-        scope_df = scope_df[scope_df["State"] == st.session_state.sel_state]
-
-    if metric == "Yield":
-        p = scope_df["Reported Production"].sum()
-        a = scope_df["Reported Production Acres"].sum()
-        summary_val = p / a if a > 0 else 0.0
-    else:
-        summary_val = scope_df[col].sum()
-
-    m1, m2, m3 = st.columns(3)
-    lbl = "Avg Yield" if metric == "Yield" else f"Total {metric}"
-    m1.metric(lbl, f"{summary_val:{fmt}} {unit}")
-    m2.metric("Counties", f"{scope_df[['State','County']].drop_duplicates().shape[0]:,}")
-    m3.metric("States",   f"{scope_df['State'].nunique():,}")
-
-    # ── Map ────────────────────────────────────────────────────────────────────
-    if st.session_state.sel_state is None:
-        agg = agg_data(df, practice, metric, ["State"])
-        fig = build_state_fig(agg, metric, crop_label, practice, logo_50yr)
-        event = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key="state_map")
-        if event and hasattr(event, "selection") and event.selection.points:
-            loc = event.selection.points[0].get("location")
-            if loc and loc in states_avail:
-                st.session_state.sel_state = loc
+        nc1, nc2, nc3 = st.columns([1, 1.8, 0.6])
+        with nc1:
+            nass_crop = st.selectbox("Crop", list(NASS_CROP_PARAMS.keys()), key="nass_crop")
+        with nc3:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Refresh", use_container_width=True, key="nass_refresh"):
+                st.cache_data.clear()
                 st.rerun()
-        st.caption("Click any state on the map or use the State Drill-Down dropdown to view county detail.")
 
-    else:
-        state = st.session_state.sel_state
-        agg   = agg_data(df[df["State"] == state], practice, metric, ["County"])
+        with st.spinner(f"Loading NASS 2025 {nass_crop} data..."):
+            nass_df = load_nass_county(nass_crop)
 
-        if st.button("← Back to US Map", key="back_btn"):
-            st.session_state.sel_state = None
-            st.rerun()
-
-        if agg.empty or agg[col].sum() == 0:
-            st.warning(f"No data for {ABBR_TO_NAME.get(state, state)} with the selected filters.")
+        if nass_df.empty:
+            st.warning(
+                f"No NASS 2025 county-level production data returned for {nass_crop}. "
+                "The data may not yet be published or the API parameters may need adjustment."
+            )
         else:
-            fig = build_county_fig(
-                agg, geo, fips_lk, centroids, state, metric, crop_label, practice, logo_50yr
-            )
-            if fig is None:
-                st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
-            else:
-                county_event = st.plotly_chart(
-                    fig, use_container_width=True, on_select="rerun", key="county_map"
+            states_avail_nass = sorted(nass_df["State"].unique())
+            with nc2:
+                state_opts_nass = ["— US Overview —"] + [
+                    f"{a}  —  {ABBR_TO_NAME.get(a, a)}" for a in states_avail_nass
+                ]
+                default_nass = 0
+                if st.session_state.nass_sel_state:
+                    try:
+                        default_nass = states_avail_nass.index(st.session_state.nass_sel_state) + 1
+                    except ValueError:
+                        default_nass = 0
+                nass_sel = st.selectbox(
+                    "State Drill-Down", state_opts_nass,
+                    index=default_nass, key="nass_state_dd"
                 )
-                if county_event and hasattr(county_event, "selection") and county_event.selection.points:
-                    st.session_state.sel_state = None
-                    st.rerun()
-                st.caption("Click any county or use ← Back to return to the US overview.")
+                st.session_state.nass_sel_state = (
+                    None if nass_sel.startswith("—") else nass_sel[:2]
+                )
 
-        state_name = ABBR_TO_NAME.get(state, state)
-        st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>", unsafe_allow_html=True)
-        ranking_fig = build_ranking_chart(agg, metric, state)
-        st.plotly_chart(ranking_fig, use_container_width=True, key="ranking_chart")
-
-        with st.expander(f"County Data Table — {state_name}", expanded=False):
-            disp = agg.sort_values(col, ascending=False).copy()
-            disp.columns = ["County", f"{metric} ({unit})"]
-            disp[f"{metric} ({unit})"] = disp[f"{metric} ({unit})"].apply(
-                lambda v: f"{v:,.1f}" if pd.notna(v) else "—"
+            # Summary metrics
+            scope_nass = (
+                nass_df if st.session_state.nass_sel_state is None
+                else nass_df[nass_df["State"] == st.session_state.nass_sel_state]
             )
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            nm1, nm2, nm3 = st.columns(3)
+            nm1.metric("Total Production", f"{scope_nass['Production'].sum():,.0f} bu")
+            nm2.metric("Counties Reporting",
+                       f"{scope_nass[['State','County']].drop_duplicates().shape[0]:,}")
+            nm3.metric("States", f"{scope_nass['State'].nunique():,}")
+
+            # Map / county drill-down
+            if st.session_state.nass_sel_state is None:
+                nass_fig = build_nass_state_fig(nass_df, nass_crop, logo_50yr)
+                nass_event = st.plotly_chart(
+                    nass_fig, use_container_width=True,
+                    on_select="rerun", key="nass_state_map"
+                )
+                if nass_event and hasattr(nass_event, "selection") and nass_event.selection.points:
+                    loc = nass_event.selection.points[0].get("location")
+                    if loc and loc in states_avail_nass:
+                        st.session_state.nass_sel_state = loc
+                        st.rerun()
+                st.caption("Click any state or use State Drill-Down to view county detail.")
+
+            else:
+                nass_state = st.session_state.nass_sel_state
+                state_df   = nass_df[nass_df["State"] == nass_state].copy()
+
+                if st.button("← Back to US Map", key="nass_back_btn"):
+                    st.session_state.nass_sel_state = None
+                    st.rerun()
+
+                if state_df.empty or state_df["Production"].sum() == 0:
+                    st.warning(
+                        f"No NASS data available for "
+                        f"{ABBR_TO_NAME.get(nass_state, nass_state)} with the selected filters."
+                    )
+                else:
+                    nass_county_fig = build_nass_county_fig(
+                        state_df, geo, nass_state, nass_crop, logo_50yr, centroids
+                    )
+                    if nass_county_fig is None:
+                        st.info(f"County map not available for "
+                                f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
+                    else:
+                        nass_ce = st.plotly_chart(
+                            nass_county_fig, use_container_width=True,
+                            on_select="rerun", key="nass_county_map"
+                        )
+                        if nass_ce and hasattr(nass_ce, "selection") and nass_ce.selection.points:
+                            st.session_state.nass_sel_state = None
+                            st.rerun()
+                        st.caption("Click any county or use ← Back to return to the US overview.")
+
+                st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
+                            unsafe_allow_html=True)
+                ranking_nass = build_nass_ranking_chart(state_df, nass_state, nass_crop)
+                st.plotly_chart(ranking_nass, use_container_width=True, key="nass_ranking")
+
+                with st.expander(
+                    f"County Data Table — {ABBR_TO_NAME.get(nass_state, nass_state)}",
+                    expanded=False
+                ):
+                    disp = (state_df[["County", "Production"]]
+                            .sort_values("Production", ascending=False).copy())
+                    disp["Production (bu)"] = disp["Production"].apply(
+                        lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                    )
+                    st.dataframe(disp[["County", "Production (bu)"]],
+                                 use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RMA TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_rma:
+        if "rma_sel_state" not in st.session_state:
+            st.session_state.rma_sel_state = None
+
+        crops_available = [c for c in ["Corn", "Soybeans", "Wheat"] if c in rma_data]
+        c1, c2, c3, c4, c5, c6 = st.columns([1, 1.2, 1.2, 1.2, 1.5, 0.6])
+
+        with c1:
+            crop = st.selectbox("Crop", crops_available, key="rma_crop")
+        with c2:
+            metric = st.selectbox("Metric", list(METRIC_COL.keys()), key="rma_metric")
+        with c3:
+            practice = st.selectbox("Practice", ["All", "Irrigated", "Non-Irrigated"],
+                                    key="rma_practice")
+        with c4:
+            if crop == "Wheat":
+                wheat_types = sorted(
+                    t for t in rma_data["Wheat"]["Type"].dropna().unique()
+                    if "khor" not in t.lower()
+                )
+                default_wt = next(
+                    (i for i, t in enumerate(wheat_types) if "winter" in t.lower()), 0
+                )
+                wheat_type = st.selectbox("Wheat Type ✱", wheat_types,
+                                          index=default_wt, key="rma_wheat_type")
+            else:
+                wheat_type = None
+        with c6:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Refresh Data", use_container_width=True, key="rma_refresh"):
+                st.cache_data.clear()
+                st.rerun()
+
+        df = rma_data[crop].copy()
+        if crop == "Wheat" and wheat_type:
+            df = df[df["Type"] == wheat_type]
+        crop_label = f"Wheat — {wheat_type}" if crop == "Wheat" else crop
+
+        with c5:
+            states_avail = sorted(df["State"].unique())
+            state_opts   = ["— US Overview —"] + [
+                f"{a}  —  {ABBR_TO_NAME.get(a, a)}" for a in states_avail
+            ]
+            default_idx = 0
+            if st.session_state.rma_sel_state:
+                try:
+                    default_idx = states_avail.index(st.session_state.rma_sel_state) + 1
+                except ValueError:
+                    default_idx = 0
+            sel = st.selectbox("State Drill-Down", state_opts,
+                               index=default_idx, key="rma_state_dd")
+            st.session_state.rma_sel_state = (
+                None if sel.startswith("—") else sel[:2]
+            )
+
+        col  = METRIC_COL[metric]
+        unit = METRIC_UNIT[metric]
+        fmt  = METRIC_FMT[metric]
+
+        scope_df = filter_practice(df, practice)
+        if st.session_state.rma_sel_state:
+            scope_df = scope_df[scope_df["State"] == st.session_state.rma_sel_state]
+
+        if metric == "Yield":
+            p = scope_df["Reported Production"].sum()
+            a = scope_df["Reported Production Acres"].sum()
+            summary_val = p / a if a > 0 else 0.0
+        else:
+            summary_val = scope_df[col].sum()
+
+        m1, m2, m3 = st.columns(3)
+        lbl = "Avg Yield" if metric == "Yield" else f"Total {metric}"
+        m1.metric(lbl, f"{summary_val:{fmt}} {unit}")
+        m2.metric("Counties", f"{scope_df[['State','County']].drop_duplicates().shape[0]:,}")
+        m3.metric("States",   f"{scope_df['State'].nunique():,}")
+
+        if st.session_state.rma_sel_state is None:
+            agg = agg_data(df, practice, metric, ["State"])
+            fig = build_state_fig(agg, metric, crop_label, practice, logo_50yr)
+            event = st.plotly_chart(fig, use_container_width=True,
+                                    on_select="rerun", key="rma_state_map")
+            if event and hasattr(event, "selection") and event.selection.points:
+                loc = event.selection.points[0].get("location")
+                if loc and loc in states_avail:
+                    st.session_state.rma_sel_state = loc
+                    st.rerun()
+            st.caption("Click any state on the map or use the dropdown to view county detail.")
+
+        else:
+            state = st.session_state.rma_sel_state
+            agg   = agg_data(df[df["State"] == state], practice, metric, ["County"])
+
+            if st.button("← Back to US Map", key="rma_back_btn"):
+                st.session_state.rma_sel_state = None
+                st.rerun()
+
+            if agg.empty or agg[col].sum() == 0:
+                st.warning(f"No data for {ABBR_TO_NAME.get(state, state)} with selected filters.")
+            else:
+                fig = build_county_fig(
+                    agg, geo, fips_lk, centroids, state,
+                    metric, crop_label, practice, logo_50yr
+                )
+                if fig is None:
+                    st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
+                else:
+                    county_event = st.plotly_chart(
+                        fig, use_container_width=True,
+                        on_select="rerun", key="rma_county_map"
+                    )
+                    if (county_event and hasattr(county_event, "selection")
+                            and county_event.selection.points):
+                        st.session_state.rma_sel_state = None
+                        st.rerun()
+                    st.caption("Click any county or use ← Back to return to the US overview.")
+
+            state_name = ABBR_TO_NAME.get(state, state)
+            st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
+                        unsafe_allow_html=True)
+            ranking_fig = build_ranking_chart(agg, metric, state)
+            st.plotly_chart(ranking_fig, use_container_width=True, key="rma_ranking_chart")
+
+            with st.expander(f"County Data Table — {state_name}", expanded=False):
+                disp = agg.sort_values(col, ascending=False).copy()
+                disp.columns = ["County", f"{metric} ({unit})"]
+                disp[f"{metric} ({unit})"] = disp[f"{metric} ({unit})"].apply(
+                    lambda v: f"{v:,.1f}" if pd.notna(v) else "—"
+                )
+                st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
