@@ -164,21 +164,22 @@ def load_data():
 # ── NASS Data ─────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
+    # Do NOT filter prodn_practice_desc here — some counties only report
+    # IRRIGATED / NON-IRRIGATED without an aggregate row; we dedup below.
     params = {
-        "key":                 NASS_API_KEY,
-        "source_desc":         "SURVEY",
-        "sector_desc":         "CROPS",
-        "statisticcat_desc":   "PRODUCTION",
-        "unit_desc":           "BU",
-        "agg_level_desc":      "COUNTY",
-        "prodn_practice_desc": "ALL PRODUCTION PRACTICES",
-        "year":                str(year),
-        "format":              "JSON",
+        "key":               NASS_API_KEY,
+        "source_desc":       "SURVEY",
+        "sector_desc":       "CROPS",
+        "statisticcat_desc": "PRODUCTION",
+        "unit_desc":         "BU",
+        "agg_level_desc":    "COUNTY",
+        "year":              str(year),
+        "format":            "JSON",
     }
     params.update(NASS_CROP_PARAMS[crop])
     url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
     try:
-        with urllib.request.urlopen(url, timeout=30) as r:
+        with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
     except Exception as e:
         st.warning(f"NASS API error for {crop}: {e}")
@@ -189,9 +190,11 @@ def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
         return pd.DataFrame(columns=["State", "County", "fips", "Production"])
 
     df = pd.DataFrame(records)
-    df = df[["state_alpha", "county_name", "state_fips_code", "county_ansi", "Value"]].copy()
+    needed = ["state_alpha", "county_name", "state_fips_code",
+              "county_ansi", "prodn_practice_desc", "Value"]
+    df = df[[c for c in needed if c in df.columns]].copy()
 
-    # Drop state-level aggregate rows
+    # Drop state-level aggregate rows (county_ansi flags)
     df = df[~df["county_ansi"].isin(["998", "000", "999"])]
 
     df["Production"] = pd.to_numeric(
@@ -203,7 +206,20 @@ def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
     df["State"]  = df["state_alpha"].str.strip()
     df["County"] = df["county_name"].str.strip().str.title()
 
-    return df[["State", "County", "fips", "Production"]].reset_index(drop=True)
+    # Dedup: prefer the "ALL PRODUCTION PRACTICES" row per county; if absent,
+    # keep the single highest-value row (avoids double-counting irrigated +
+    # non-irrigated where only a breakdown exists).
+    key = ["State", "County", "fips"]
+    all_prac = "ALL PRODUCTION PRACTICES"
+    if "prodn_practice_desc" in df.columns:
+        has_all = df[df["prodn_practice_desc"] == all_prac].copy()
+        no_all  = df[~df["fips"].isin(has_all["fips"].unique())].copy()
+        # For counties without an aggregate row, keep the max-production row
+        if not no_all.empty:
+            no_all = no_all.loc[no_all.groupby(key)["Production"].idxmax()]
+        df = pd.concat([has_all, no_all], ignore_index=True)
+
+    return df[key + ["Production"]].reset_index(drop=True)
 
 
 # ── GeoJSON & lookups ─────────────────────────────────────────────────────────
@@ -212,6 +228,17 @@ def load_geojson():
     url = "https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json"
     with urllib.request.urlopen(url) as r:
         return json.load(r)
+
+
+@st.cache_data
+def get_state_geojson(_geo, sfips: str) -> dict:
+    """Return a FeatureCollection filtered to a single state FIPS.
+    Cached so subsequent renders of the same state are instant.
+    """
+    return {
+        "type": "FeatureCollection",
+        "features": [f for f in _geo["features"] if f["properties"]["STATE"] == sfips],
+    }
 
 
 @st.cache_data
@@ -445,10 +472,7 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, pr
     df["fips"] = df["County"].apply(lambda c: resolve_fips(state, c, fips_lk))
     df = df.dropna(subset=["fips"])
 
-    state_geo = {
-        "type": "FeatureCollection",
-        "features": [f for f in geo["features"] if f["properties"]["STATE"] == sfips],
-    }
+    state_geo = get_state_geojson(geo, sfips)  # cached
     state_name = ABBR_TO_NAME.get(state, state)
     all_fips   = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
                   for f in state_geo["features"]]
@@ -578,10 +602,7 @@ def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids):
     if sfips is None:
         return None
 
-    state_geo = {
-        "type": "FeatureCollection",
-        "features": [f for f in geo["features"] if f["properties"]["STATE"] == sfips],
-    }
+    state_geo = get_state_geojson(geo, sfips)  # cached
     all_fips = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
                 for f in state_geo["features"]]
 
@@ -810,13 +831,15 @@ def main():
 
                 if state_df.empty or state_df["Production"].sum() == 0:
                     st.warning(
-                        f"No NASS data available for "
-                        f"{ABBR_TO_NAME.get(nass_state, nass_state)} with the selected filters."
+                        f"No NASS 2025 county data available for "
+                        f"{ABBR_TO_NAME.get(nass_state, nass_state)}. "
+                        "This crop may not be produced in this state or data has not been published."
                     )
                 else:
-                    nass_county_fig = build_nass_county_fig(
-                        state_df, geo, nass_state, nass_crop, logo_50yr, centroids
-                    )
+                    with st.spinner(f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"):
+                        nass_county_fig = build_nass_county_fig(
+                            state_df, geo, nass_state, nass_crop, logo_50yr, centroids
+                        )
                     if nass_county_fig is None:
                         st.info(f"County map not available for "
                                 f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
@@ -949,10 +972,11 @@ def main():
             if agg.empty or agg[col].sum() == 0:
                 st.warning(f"No data for {ABBR_TO_NAME.get(state, state)} with selected filters.")
             else:
-                fig = build_county_fig(
-                    agg, geo, fips_lk, centroids, state,
-                    metric, crop_label, practice, logo_50yr
-                )
+                with st.spinner(f"Building {ABBR_TO_NAME.get(state, state)} county map…"):
+                    fig = build_county_fig(
+                        agg, geo, fips_lk, centroids, state,
+                        metric, crop_label, practice, logo_50yr
+                    )
                 if fig is None:
                     st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
                 else:
