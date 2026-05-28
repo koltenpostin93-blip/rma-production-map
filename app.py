@@ -480,6 +480,15 @@ def main():
     )
 
     st.title("USDA RMA Yield and Production")
+    st.markdown(
+        f"""<p style='color:{MUTED};font-size:0.80rem;margin-top:-10px;margin-bottom:4px;line-height:1.5;'>
+        ℹ️ Figures represent <b style='color:{TEXT};'>RMA Estimated Production</b>
+        (insured acres × projected yield) and may differ from
+        <b style='color:{TEXT};'>USDA NASS</b> final production figures,
+        which are based on post-harvest surveys of all acres.
+        </p>""",
+        unsafe_allow_html=True,
+    )
 
     if "sel_state" not in st.session_state:
         st.session_state.sel_state = None
