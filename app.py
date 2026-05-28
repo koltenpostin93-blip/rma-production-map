@@ -1088,18 +1088,11 @@ def main():
                     nass_fig = build_nass_state_fig(
                         state_vdf, nass_crop, nass_year, nass_view, logo_50yr
                     )
-                    nass_map_evt = st.plotly_chart(
-                        nass_fig, use_container_width=True,
-                        on_select="rerun", key="nass_state_map"
-                    )
-                    if (nass_map_evt and nass_map_evt.selection
-                            and nass_map_evt.selection.points):
-                        clicked = nass_map_evt.selection.points[0].get("location")
-                        if clicked and clicked in states_avail_nass:
-                            if st.session_state.nass_sel_state != clicked:
-                                st.session_state.nass_sel_state = clicked
-                                st.rerun()
-                    st.caption("Click a state to drill down, or use the dropdown above.")
+                    nass_fig.update_layout(dragmode=False)
+                    st.plotly_chart(nass_fig, use_container_width=True,
+                                    key="nass_state_map",
+                                    config={"scrollZoom": False, "displayModeBar": False})
+                    st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
             else:
                 nass_state = sel_st
@@ -1130,15 +1123,9 @@ def main():
                             f"{ABBR_TO_NAME.get(nass_state, nass_state)}."
                         )
                     else:
-                        nass_county_evt = st.plotly_chart(
-                            nass_county_fig, use_container_width=True,
-                            on_select="rerun", key="nass_county_map"
-                        )
-                        if (nass_county_evt and nass_county_evt.selection
-                                and nass_county_evt.selection.points):
-                            st.session_state.nass_sel_state = None
-                            st.rerun()
-                        st.caption("Click the map to return to the US overview, or use ← Back above.")
+                        st.plotly_chart(nass_county_fig, use_container_width=True,
+                                        key="nass_county_map")
+                        st.caption("Use ← Back to US Map to return to the national overview.")
 
                 st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                             unsafe_allow_html=True)
@@ -1255,18 +1242,10 @@ def main():
         if st.session_state.rma_sel_state is None:
             agg = agg_data(df, practice, metric, ["State"])
             fig = build_state_fig(agg, metric, crop_label, practice, logo_50yr)
-            rma_map_evt = st.plotly_chart(
-                fig, use_container_width=True,
-                on_select="rerun", key="rma_state_map"
-            )
-            if (rma_map_evt and rma_map_evt.selection
-                    and rma_map_evt.selection.points):
-                clicked = rma_map_evt.selection.points[0].get("location")
-                if clicked and clicked in states_avail:
-                    if st.session_state.rma_sel_state != clicked:
-                        st.session_state.rma_sel_state = clicked
-                        st.rerun()
-            st.caption("Click a state to drill down, or use the dropdown above.")
+            fig.update_layout(dragmode=False)
+            st.plotly_chart(fig, use_container_width=True, key="rma_state_map",
+                            config={"scrollZoom": False, "displayModeBar": False})
+            st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
         else:
             state = st.session_state.rma_sel_state
@@ -1287,15 +1266,8 @@ def main():
                 if fig is None:
                     st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
                 else:
-                    rma_county_evt = st.plotly_chart(
-                        fig, use_container_width=True,
-                        on_select="rerun", key="rma_county_map"
-                    )
-                    if (rma_county_evt and rma_county_evt.selection
-                            and rma_county_evt.selection.points):
-                        st.session_state.rma_sel_state = None
-                        st.rerun()
-                    st.caption("Click the map to return to the US overview, or use ← Back above.")
+                    st.plotly_chart(fig, use_container_width=True, key="rma_county_map")
+                    st.caption("Use ← Back to US Map to return to the national overview.")
 
             state_name = ABBR_TO_NAME.get(state, state)
             st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
