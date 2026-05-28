@@ -906,6 +906,30 @@ def main():
         .stTabs [data-baseweb="tab-list"] {{ background-color: {PANEL}; border-radius: 6px 6px 0 0; gap: 4px; }}
         .stTabs [data-baseweb="tab"] {{ color: {MUTED}; font-size: 0.92rem; padding: 8px 20px; }}
         .stTabs [aria-selected="true"] {{ color: {ACCENT} !important; border-bottom: 2px solid {ACCENT} !important; }}
+        /* NASS view toggle — style horizontal radio as a button group */
+        div[data-testid="stRadio"] > label {{ display: none; }}
+        div[data-testid="stRadio"] > div[role="radiogroup"] {{
+            display: flex; flex-direction: row; gap: 6px; flex-wrap: wrap;
+        }}
+        div[data-testid="stRadio"] > div[role="radiogroup"] > label {{
+            background-color: {PANEL} !important;
+            border: 1px solid {BORDER} !important;
+            border-radius: 6px !important;
+            padding: 6px 16px !important;
+            cursor: pointer !important;
+            color: {MUTED} !important;
+            font-size: 0.84rem !important;
+            font-weight: 500 !important;
+            margin: 0 !important;
+        }}
+        div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {{
+            border-color: {ACCENT} !important;
+            color: {ACCENT} !important;
+            background-color: {SURFACE} !important;
+        }}
+        div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {{
+            display: none !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -951,24 +975,40 @@ def main():
         if "nass_sel_state" not in st.session_state:
             st.session_state.nass_sel_state = None
 
-        nc1, nc2, nc3, nc4, nc5, nc6 = st.columns([1, 0.75, 1.4, 0.75, 1.8, 0.55])
+        # Row 1 — Crop, Year, State drill-down (nc3 filled after data loads), Refresh
+        nc1, nc2, nc3, nc4 = st.columns([1, 0.75, 1.8, 0.55])
         with nc1:
             nass_crop = st.selectbox("Crop", list(NASS_CROP_PARAMS.keys()), key="nass_crop")
         with nc2:
             nass_year = st.selectbox("Year", NASS_YEARS, index=0, key="nass_year")
-        with nc3:
-            nass_view = st.selectbox("View / Stat", NASS_VIEW_OPTS, index=0, key="nass_view")
         with nc4:
-            if nass_view == "Change vs Selected Year (%)":
-                avail_comp   = [y for y in NASS_YEARS if y != nass_year]
-                nass_comp_yr = st.selectbox("Compare Year", avail_comp, key="nass_comp_year")
-            else:
-                nass_comp_yr = None
-        with nc6:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             if st.button("🔄 Refresh", use_container_width=True, key="nass_refresh"):
                 st.cache_data.clear()
                 st.rerun()
+
+        # Row 2 — View toggle buttons + conditional compare-year picker
+        _btn_labels = ["Production", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
+        _btn_to_view = {
+            "Production":       "Production (bu)",
+            "vs Prior Year":    "Change vs Prior Year (%)",
+            "vs Selected Year": "Change vs Selected Year (%)",
+            "vs 3-Yr Avg":      "Change vs 3-Yr Average (%)",
+        }
+        rb_col, cy_col = st.columns([3.2, 0.9])
+        with rb_col:
+            nass_view_btn = st.radio(
+                "View", _btn_labels, horizontal=True,
+                key="nass_view", label_visibility="collapsed",
+            )
+        nass_view = _btn_to_view[nass_view_btn]
+
+        if nass_view == "Change vs Selected Year (%)":
+            with cy_col:
+                avail_comp   = [y for y in NASS_YEARS if y != nass_year]
+                nass_comp_yr = st.selectbox("Compare Year", avail_comp, key="nass_comp_year")
+        else:
+            nass_comp_yr = None
 
         with st.spinner(f"Loading NASS {nass_year} {nass_crop} data..."):
             nass_df = load_nass_county(nass_crop, nass_year)
@@ -992,7 +1032,7 @@ def main():
             )
         else:
             states_avail_nass = sorted(nass_df["State"].unique())
-            with nc5:
+            with nc3:
                 state_opts_nass = ["— US Overview —"] + [
                     f"{a}  —  {ABBR_TO_NAME.get(a, a)}" for a in states_avail_nass
                 ]
