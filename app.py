@@ -967,7 +967,7 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_nass, tab_rma = st.tabs(["🌾  NASS Production", "📋  RMA"])
+    tab_nass, tab_rma, tab_about = st.tabs(["🌾  NASS Production", "📋  RMA", "📖  About the Data"])
 
     # ══════════════════════════════════════════════════════════════════════════
     # NASS TAB
@@ -1283,6 +1283,276 @@ def main():
                     lambda v: f"{v:,.1f}" if pd.notna(v) else "—"
                 )
                 st.dataframe(disp, use_container_width=True, hide_index=True)
+
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ABOUT THE DATA TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_about:
+        st.markdown(
+            f"<h3 style='color:{ACCENT};margin-top:0;margin-bottom:4px;'>"
+            "Understanding NASS vs RMA Production Data</h3>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<p style='color:{MUTED};font-size:0.86rem;margin-top:0;margin-bottom:20px;'>"
+            "Two federal agencies measure crop production using fundamentally different methodologies — "
+            "knowing which lens you're looking through matters when interpreting the numbers.</p>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Side-by-side methodology cards ────────────────────────────────────
+        ab_l, ab_r = st.columns(2, gap="large")
+        with ab_l:
+            st.markdown(
+                f"""<div style='background:{PANEL};border:1px solid {BORDER};
+                border-radius:8px;padding:20px 24px;height:100%;'>
+                <h4 style='color:{ACCENT};margin-top:0;margin-bottom:10px;font-size:1.05rem;'>
+                🌾&nbsp; NASS — Survey-Based Total Production</h4>
+                <p style='color:{TEXT};font-size:0.91rem;line-height:1.75;margin:0 0 10px 0;'>
+                The <b>USDA National Agricultural Statistics Service (NASS)</b> produces
+                official crop estimates by surveying thousands of farm operators,
+                grain elevators, and agribusinesses nationwide.
+                </p>
+                <ul style='color:{MUTED};font-size:0.88rem;line-height:1.85;
+                margin:0;padding-left:18px;'>
+                <li>Covers <b style='color:{TEXT};'>all planted acres</b> — insured and uninsured alike</li>
+                <li>Final estimates released post-harvest (typically November)</li>
+                <li>Represents <b style='color:{TEXT};'>actual harvested production</b> for the crop year</li>
+                <li>The definitive benchmark for U.S. crop supply &amp; demand</li>
+                <li>Feeds directly into the USDA WASDE monthly balance sheets</li>
+                </ul>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        with ab_r:
+            st.markdown(
+                f"""<div style='background:{PANEL};border:1px solid {BORDER};
+                border-radius:8px;padding:20px 24px;height:100%;'>
+                <h4 style='color:{ACCENT};margin-top:0;margin-bottom:10px;font-size:1.05rem;'>
+                📋&nbsp; RMA — Insurance Policy-Based Production</h4>
+                <p style='color:{TEXT};font-size:0.91rem;line-height:1.75;margin:0 0 10px 0;'>
+                The <b>USDA Risk Management Agency (RMA)</b> collects data through the
+                federal crop insurance program, drawing from individual policy records
+                filed by insured farmers and processed by approved insurance providers.
+                </p>
+                <ul style='color:{MUTED};font-size:0.88rem;line-height:1.85;
+                margin:0;padding-left:18px;'>
+                <li>Covers only <b style='color:{TEXT};'>federally insured acres</b></li>
+                <li>Based on Actual Production History (APH) and policy-reported yields</li>
+                <li>Breakdowns available by practice (Irrigated / Non-Irrigated)</li>
+                <li>Published annually via the RMA Summary of Business</li>
+                <li>Reflects <b style='color:{TEXT};'>insured-sector production</b>, not the full market</li>
+                </ul>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+
+        # ── Why numbers differ callout ─────────────────────────────────────────
+        st.markdown(
+            f"""<div style='background:{SURFACE};border-left:3px solid {ACCENT};
+            border-radius:0 6px 6px 0;padding:14px 20px;margin-bottom:24px;'>
+            <h4 style='color:{ACCENT};margin:0 0 8px 0;font-size:1rem;'>
+            ⚡&nbsp; Why RMA Figures Trend Higher Than NASS</h4>
+            <p style='color:{TEXT};font-size:0.90rem;line-height:1.80;margin:0;'>
+            Even for the same county and crop year, RMA reported production often runs
+            <b>above the NASS estimate</b>. Several structural factors drive this gap:
+            </p>
+            <ul style='color:{MUTED};font-size:0.88rem;line-height:1.85;
+            margin:8px 0 0 0;padding-left:18px;'>
+            <li><b style='color:{TEXT};'>Larger, higher-yielding operations</b> — farms that purchase
+            crop insurance tend to be bigger and more productive than the average uninsured acre.</li>
+            <li><b style='color:{TEXT};'>APH yield smoothing</b> — RMA uses Actual Production History
+            (a multi-year rolling average) rather than any single harvest year, which dampens
+            downside and can overstate expected production in weak years.</li>
+            <li><b style='color:{TEXT};'>Irrigated acre weighting</b> — insured acres skew toward
+            irrigated, higher-yield ground, lifting the portfolio average above the county mean.</li>
+            <li><b style='color:{TEXT};'>Convergence over time</b> — as participation has climbed to
+            ~92–93 % of planted acres, the RMA dataset increasingly mirrors the full universe,
+            and the gap with NASS has narrowed materially.</li>
+            </ul>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        # ── Participation rate chart ───────────────────────────────────────────
+        st.markdown(
+            f"<h4 style='color:{ACCENT};margin-bottom:2px;'>"
+            "From Optional to Universal: U.S. Crop Insurance Participation</h4>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<p style='color:{MUTED};font-size:0.82rem;margin-top:0;margin-bottom:10px;'>"
+            "Share of planted acres covered under federally reinsured crop insurance, 2000 – 2025.</p>",
+            unsafe_allow_html=True,
+        )
+
+        # Approximate annual participation rates derived from
+        # USDA RMA Summary of Business ÷ USDA NASS planted acres
+        _PART_YEARS = list(range(2000, 2026))
+        _CORN_PCT = [
+            66, 67, 70, 72, 73, 74, 75, 77,   # 2000-2007
+            80, 82, 83, 84, 85, 87, 89, 90,   # 2008-2015
+            90, 91, 91, 91, 91, 91, 92, 92, 92, 92,  # 2016-2025
+        ]
+        _SOY_PCT = [
+            64, 65, 67, 69, 71, 72, 73, 75,   # 2000-2007
+            77, 79, 80, 82, 83, 85, 87, 89,   # 2008-2015
+            90, 91, 91, 92, 92, 92, 93, 93, 93, 93,  # 2016-2025
+        ]
+
+        part_fig = go.Figure()
+
+        # Shaded area beneath lines for visual weight
+        part_fig.add_trace(go.Scatter(
+            x=_PART_YEARS + _PART_YEARS[::-1],
+            y=_CORN_PCT + [55] * len(_CORN_PCT),
+            fill="toself",
+            fillcolor=f"rgba(74,222,128,0.06)",
+            line=dict(width=0),
+            showlegend=False, hoverinfo="skip",
+        ))
+        part_fig.add_trace(go.Scatter(
+            x=_PART_YEARS + _PART_YEARS[::-1],
+            y=_SOY_PCT + [55] * len(_SOY_PCT),
+            fill="toself",
+            fillcolor=f"rgba(96,165,250,0.06)",
+            line=dict(width=0),
+            showlegend=False, hoverinfo="skip",
+        ))
+
+        # Corn line
+        part_fig.add_trace(go.Scatter(
+            x=_PART_YEARS, y=_CORN_PCT,
+            mode="lines+markers",
+            name="Corn",
+            line=dict(color=ACCENT, width=2.5),
+            marker=dict(size=5, color=ACCENT),
+            hovertemplate="%{x}: <b>%{y}%</b><extra>Corn</extra>",
+        ))
+
+        # Soybeans line
+        part_fig.add_trace(go.Scatter(
+            x=_PART_YEARS, y=_SOY_PCT,
+            mode="lines+markers",
+            name="Soybeans",
+            line=dict(color="#60a5fa", width=2.5),
+            marker=dict(size=5, color="#60a5fa"),
+            hovertemplate="%{x}: <b>%{y}%</b><extra>Soybeans</extra>",
+        ))
+
+        # 2008 Farm Bill reference
+        part_fig.add_vline(
+            x=2008, line_color=BORDER, line_width=1.5, line_dash="dot",
+            annotation_text="2008 Farm Bill",
+            annotation_position="top right",
+            annotation_font=dict(color=MUTED, size=10),
+        )
+        # 2014 Farm Bill reference
+        part_fig.add_vline(
+            x=2014, line_color=BORDER, line_width=1.5, line_dash="dot",
+            annotation_text="2014 Farm Bill",
+            annotation_position="top right",
+            annotation_font=dict(color=MUTED, size=10),
+        )
+
+        # Endpoint annotations — 2000
+        part_fig.add_annotation(
+            x=2000, y=66, text="66%", showarrow=False,
+            xanchor="right", xshift=-6, yshift=8,
+            font=dict(color=ACCENT, size=11, family="Arial Bold"),
+        )
+        part_fig.add_annotation(
+            x=2000, y=64, text="64%", showarrow=False,
+            xanchor="right", xshift=-6, yshift=-10,
+            font=dict(color="#60a5fa", size=11, family="Arial Bold"),
+        )
+        # Endpoint annotations — 2025
+        part_fig.add_annotation(
+            x=2025, y=92, text="92%", showarrow=False,
+            xanchor="left", xshift=6, yshift=-10,
+            font=dict(color=ACCENT, size=11, family="Arial Bold"),
+        )
+        part_fig.add_annotation(
+            x=2025, y=93, text="93%", showarrow=False,
+            xanchor="left", xshift=6, yshift=8,
+            font=dict(color="#60a5fa", size=11, family="Arial Bold"),
+        )
+
+        part_fig.update_layout(
+            paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+            font=dict(color=TEXT, family="Arial"),
+            margin=dict(l=60, r=70, t=30, b=50),
+            height=380,
+            xaxis=dict(
+                title="Year",
+                gridcolor=BORDER,
+                tickfont=dict(color=MUTED),
+                title_font=dict(color=MUTED),
+                dtick=2,
+                range=[1998.5, 2026.5],
+                zeroline=False,
+            ),
+            yaxis=dict(
+                title="% of Planted Acres Insured",
+                gridcolor=BORDER,
+                tickfont=dict(color=MUTED),
+                title_font=dict(color=MUTED),
+                range=[55, 100],
+                ticksuffix="%",
+                zeroline=False,
+            ),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02,
+                xanchor="left", x=0,
+                font=dict(color=TEXT, size=11),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            hovermode="x unified",
+        )
+
+        st.plotly_chart(
+            part_fig, use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+        st.markdown(
+            f"<p style='color:{MUTED};font-size:0.78rem;margin-top:2px;'>"
+            "Source: USDA RMA Summary of Business &nbsp;+&nbsp; USDA NASS Quick Stats · Annual, 2000–2025. "
+            "Participation rates represent federally insured planted acres as a share of total NASS planted acres. "
+            "Historical series are approximate; endpoint values (2000 &amp; 2025) are per RMA/NASS published data.</p>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Quick-reference comparison table ─────────────────────────────────
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<h4 style='color:{ACCENT};margin-bottom:8px;'>At a Glance: Key Differences</h4>",
+            unsafe_allow_html=True,
+        )
+        cmp_df = pd.DataFrame({
+            "": ["Data collection method", "Acre coverage", "Yield basis",
+                 "Practice detail", "Primary use", "Publication timing"],
+            "NASS": [
+                "Farm & elevator surveys",
+                "All planted acres (insured + uninsured)",
+                "Actual harvested yield",
+                "No (all-practice aggregate)",
+                "Supply/demand balance sheets (WASDE)",
+                "Monthly estimates; final in November",
+            ],
+            "RMA": [
+                "Individual insurance policy records",
+                "Federally insured acres only (~92–93%)",
+                "APH / policy-reported yield (multi-year avg)",
+                "Yes — Irrigated vs Non-Irrigated",
+                "Crop insurance pricing & indemnity analysis",
+                "Annual Summary of Business (spring/summer)",
+            ],
+        })
+        st.dataframe(cmp_df, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
