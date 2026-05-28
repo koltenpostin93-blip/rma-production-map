@@ -509,7 +509,8 @@ def main():
     with c4:
         if crop == "Wheat":
             wheat_types = sorted(data["Wheat"]["Type"].dropna().unique().tolist())
-            wheat_type  = st.selectbox("Wheat Type ✱", wheat_types)
+            default_wt  = next((i for i, t in enumerate(wheat_types) if "winter" in t.lower()), 0)
+            wheat_type  = st.selectbox("Wheat Type ✱", wheat_types, index=default_wt)
         else:
             wheat_type = None
     with c6:
