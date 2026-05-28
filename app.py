@@ -99,6 +99,17 @@ def load_data():
             df["Type"] = df["Type"].str.strip()
         for col in METRIC_COL.values():
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        # RMA exports include multiple insurance-plan sub-tiers (Buy-Up, CAT, etc.)
+        # per county/practice with no plan-code column retained. Keep only the row
+        # with the highest Reported Production per group — that is always the main
+        # Buy-Up coverage row; CAT/sub-plan rows are a small fraction and would
+        # inflate totals if summed.
+        key_cols = [c for c in ["State", "County", "Practice", "Type", "Yield Year"]
+                    if c in df.columns]
+        idx_keep = df.groupby(key_cols)["Reported Production"].idxmax()
+        df = df.loc[idx_keep].reset_index(drop=True)
+
         out[crop] = df
     return out
 
