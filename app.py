@@ -405,6 +405,15 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop, practice
     fig.update_layout(**_base_layout(title_text), height=620)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
 
+    # Adaptive font size — scale with average county area so labels feel anchored
+    county_areas = [centroids[f][2] for f in all_fips if f in centroids]
+    if county_areas:
+        avg_area = float(np.mean(county_areas))
+        # Small counties (~0.05 sq°) → size 9, large counties (~0.5 sq°) → size 14
+        label_size = int(np.clip(9 + np.log(max(avg_area, 0.01) / 0.05) * 2.0, 9, 15))
+    else:
+        label_size = 10
+
     # County data labels — larger counties get priority
     candidates = []
     for _, row in df.iterrows():
@@ -415,10 +424,11 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop, practice
             candidates.append((area, cx, cy, label))
     candidates.sort(reverse=True)
 
-    MIN_SEP = 0.30
+    # Deconfliction gap also scales with county size so dense states skip more
+    min_sep = np.clip(0.15 + avg_area * 0.8, 0.20, 0.45) if county_areas else 0.30
     placed, lons, lats, texts = [], [], [], []
     for area, cx, cy, label in candidates:
-        if not any((cx - px) ** 2 + (cy - py) ** 2 < MIN_SEP ** 2 for px, py in placed):
+        if not any((cx - px) ** 2 + (cy - py) ** 2 < min_sep ** 2 for px, py in placed):
             placed.append((cx, cy))
             lons.append(cx)
             lats.append(cy)
@@ -430,7 +440,7 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop, practice
             lat=lats,
             text=texts,
             mode="text",
-            textfont=dict(color="#888888", size=8, family="Arial Black"),
+            textfont=dict(color="#aaaaaa", size=label_size, family="Arial Black"),
             showlegend=False,
             hoverinfo="skip",
         ))
