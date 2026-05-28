@@ -25,6 +25,18 @@ STATE_FIPS = {
     "TN": "47", "TX": "48", "WI": "55",
 }
 
+# Approximate geographic centroids (lon, lat) for label placement on US map
+STATE_CENTROIDS = {
+    "AL": (-86.8,  32.8), "AR": (-92.4,  34.9), "CO": (-105.5, 39.0),
+    "GA": (-83.4,  32.7), "IA": (-93.1,  42.0), "IL": (-89.2,  40.0),
+    "IN": (-86.3,  40.3), "KS": (-98.4,  38.5), "KY": (-84.9,  37.5),
+    "MI": (-84.5,  44.3), "MN": (-94.3,  46.4), "MO": (-92.5,  38.4),
+    "MS": (-89.7,  32.7), "ND": (-100.5, 47.5), "NE": (-99.9,  41.5),
+    "OH": (-82.8,  40.4), "OK": (-97.5,  35.5), "PA": (-77.2,  40.9),
+    "SC": (-80.9,  33.8), "SD": (-100.2, 44.4), "TN": (-86.7,  35.8),
+    "TX": (-99.3,  31.5), "WI": (-89.8,  44.5),
+}
+
 ABBR_TO_NAME = {
     "AL": "Alabama", "AR": "Arkansas", "CO": "Colorado", "GA": "Georgia",
     "IA": "Iowa", "IL": "Illinois", "IN": "Indiana", "KS": "Kansas",
@@ -172,6 +184,17 @@ def format_label(val, metric):
     return f"{val / 100_000:.2f}"
 
 
+def format_state_label(val, metric):
+    """Compact label for US overview map."""
+    if pd.isna(val) or val == 0:
+        return ""
+    if metric == "Yield":
+        return f"{val:.0f}"
+    if metric == "Production":
+        return f"{val / 1_000_000:.1f}"
+    return f"{val / 100_000:.1f}"
+
+
 # ── Aggregation ────────────────────────────────────────────────────────────────
 
 def filter_practice(df, practice):
@@ -304,8 +327,14 @@ def build_state_fig(agg, metric, crop, practice, logo_50yr):
     col = METRIC_COL[metric]
     unit = METRIC_UNIT[metric]
     fmt = METRIC_FMT[metric]
+    disp_unit = DISPLAY_UNIT[metric]
     df = agg.copy()
     df["StateName"] = df["State"].map(ABBR_TO_NAME)
+
+    title_text = (
+        f"{crop} — {metric} | Practice: {practice}"
+        f"<br><sup>Map labels in {disp_unit}</sup>"
+    )
 
     fig = px.choropleth(
         df,
@@ -319,7 +348,7 @@ def build_state_fig(agg, metric, crop, practice, logo_50yr):
         labels={col: f"{metric} ({unit})"},
     )
     fig.update_layout(
-        **_base_layout(f"{crop} — {metric} | Practice: {practice}"),
+        **_base_layout(title_text),
         height=520,
         geo=dict(
             showlakes=False,
@@ -333,6 +362,29 @@ def build_state_fig(agg, metric, crop, practice, logo_50yr):
             tickfont=dict(color=TEXT),
         ),
     )
+
+    # State data labels
+    lons, lats, texts = [], [], []
+    for _, row in df.iterrows():
+        label = format_state_label(row[col], metric)
+        if label and row["State"] in STATE_CENTROIDS:
+            lon, lat = STATE_CENTROIDS[row["State"]]
+            lons.append(lon)
+            lats.append(lat)
+            texts.append(label)
+
+    if lons:
+        fig.add_trace(go.Scattergeo(
+            lon=lons,
+            lat=lats,
+            text=texts,
+            mode="text",
+            geo="geo",
+            textfont=dict(color="#cccccc", size=11, family="Arial Black"),
+            showlegend=False,
+            hoverinfo="skip",
+        ))
+
     _add_logo(fig, logo_50yr, size=0.30, opacity=1.0)
     return fig
 
