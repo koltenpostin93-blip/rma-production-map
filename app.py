@@ -253,6 +253,7 @@ def get_state_geojson(_geo, sfips: str) -> dict:
             coords = raw
         features.append({
             "type": "Feature",
+            "id": f.get("id"),          # Plotly matches choropleth locations by this field
             "properties": f["properties"],
             "geometry": {"type": gtype, "coordinates": coords},
         })
