@@ -642,13 +642,25 @@ def main():
         state = st.session_state.sel_state
         agg = agg_data(df[df["State"] == state], practice, metric, ["County"])
 
+        # Back button — always visible at top of county view
+        if st.button("← Back to US Map", key="back_btn"):
+            st.session_state.sel_state = None
+            st.rerun()
+
         if agg.empty or agg[col].sum() == 0:
             st.warning(
                 f"No data for {ABBR_TO_NAME.get(state, state)} with the selected filters."
             )
         else:
             fig = build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop, practice, logo_50yr)
-            st.plotly_chart(fig, use_container_width=True, key="county_map")
+            county_event = st.plotly_chart(
+                fig, use_container_width=True, on_select="rerun", key="county_map"
+            )
+            # Any click on a county returns to US overview
+            if county_event and hasattr(county_event, "selection") and county_event.selection.points:
+                st.session_state.sel_state = None
+                st.rerun()
+            st.caption("Click any county or use ← Back to return to the US overview.")
 
         state_name = ABBR_TO_NAME.get(state, state)
 
