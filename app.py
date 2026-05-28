@@ -513,7 +513,7 @@ def main():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3, c4 = st.columns([1, 1.2, 1.2, 1.5])
+    c1, c2, c3, c4, c5 = st.columns([1, 1.2, 1.2, 1.5, 0.6])
 
     with c1:
         crop = st.selectbox("Crop", ["Corn", "Soybeans"])
@@ -521,6 +521,11 @@ def main():
         metric = st.selectbox("Metric", list(METRIC_COL.keys()))
     with c3:
         practice = st.selectbox("Practice", ["All", "Irrigated", "Non-Irrigated"])
+    with c5:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
     with c4:
         df = data[crop]
         states_avail = sorted(df["State"].unique())
