@@ -508,7 +508,10 @@ def main():
         practice = st.selectbox("Practice", ["All", "Irrigated", "Non-Irrigated"])
     with c4:
         if crop == "Wheat":
-            wheat_types = sorted(data["Wheat"]["Type"].dropna().unique().tolist())
+            wheat_types = sorted(
+                t for t in data["Wheat"]["Type"].dropna().unique()
+                if "khor" not in t.lower()
+            )
             default_wt  = next((i for i, t in enumerate(wheat_types) if "winter" in t.lower()), 0)
             wheat_type  = st.selectbox("Wheat Type ✱", wheat_types, index=default_wt)
         else:
