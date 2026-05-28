@@ -1167,7 +1167,7 @@ def main():
         if "rma_sel_state" not in st.session_state:
             st.session_state.rma_sel_state = None
 
-        crops_available = [c for c in ["Corn", "Soybeans", "Wheat"] if c in rma_data]
+        crops_available = [c for c in ["Corn", "Wheat"] if c in rma_data]
         c1, c2, c3, c4, c5, c6 = st.columns([1, 1.2, 1.2, 1.2, 1.5, 0.6])
 
         with c1:
