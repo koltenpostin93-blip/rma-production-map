@@ -858,16 +858,8 @@ def main():
             # Map / county drill-down
             if st.session_state.nass_sel_state is None:
                 nass_fig = build_nass_state_fig(nass_df, nass_crop, logo_50yr)
-                nass_event = st.plotly_chart(
-                    nass_fig, use_container_width=True,
-                    on_select="rerun", key="nass_state_map"
-                )
-                if nass_event and hasattr(nass_event, "selection") and nass_event.selection.points:
-                    loc = nass_event.selection.points[0].get("location")
-                    if loc and loc in states_avail_nass:
-                        st.session_state.nass_sel_state = loc
-                        st.rerun()
-                st.caption("Click any state or use State Drill-Down to view county detail.")
+                st.plotly_chart(nass_fig, use_container_width=True, key="nass_state_map")
+                st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
             else:
                 nass_state = st.session_state.nass_sel_state
@@ -892,14 +884,9 @@ def main():
                         st.info(f"County map not available for "
                                 f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
                     else:
-                        nass_ce = st.plotly_chart(
-                            nass_county_fig, use_container_width=True,
-                            on_select="rerun", key="nass_county_map"
-                        )
-                        if nass_ce and hasattr(nass_ce, "selection") and nass_ce.selection.points:
-                            st.session_state.nass_sel_state = None
-                            st.rerun()
-                        st.caption("Click any county or use ← Back to return to the US overview.")
+                        st.plotly_chart(nass_county_fig, use_container_width=True,
+                                        key="nass_county_map")
+                        st.caption("Use ← Back to US Map to return to the national overview.")
 
                 st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                             unsafe_allow_html=True)
@@ -1000,14 +987,8 @@ def main():
         if st.session_state.rma_sel_state is None:
             agg = agg_data(df, practice, metric, ["State"])
             fig = build_state_fig(agg, metric, crop_label, practice, logo_50yr)
-            event = st.plotly_chart(fig, use_container_width=True,
-                                    on_select="rerun", key="rma_state_map")
-            if event and hasattr(event, "selection") and event.selection.points:
-                loc = event.selection.points[0].get("location")
-                if loc and loc in states_avail:
-                    st.session_state.rma_sel_state = loc
-                    st.rerun()
-            st.caption("Click any state on the map or use the dropdown to view county detail.")
+            st.plotly_chart(fig, use_container_width=True, key="rma_state_map")
+            st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
         else:
             state = st.session_state.rma_sel_state
@@ -1028,15 +1009,8 @@ def main():
                 if fig is None:
                     st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
                 else:
-                    county_event = st.plotly_chart(
-                        fig, use_container_width=True,
-                        on_select="rerun", key="rma_county_map"
-                    )
-                    if (county_event and hasattr(county_event, "selection")
-                            and county_event.selection.points):
-                        st.session_state.rma_sel_state = None
-                        st.rerun()
-                    st.caption("Click any county or use ← Back to return to the US overview.")
+                    st.plotly_chart(fig, use_container_width=True, key="rma_county_map")
+                    st.caption("Use ← Back to US Map to return to the national overview.")
 
             state_name = ABBR_TO_NAME.get(state, state)
             st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
