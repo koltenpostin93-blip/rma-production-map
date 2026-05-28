@@ -987,7 +987,7 @@ def main():
                 st.cache_data.clear()
                 st.rerun()
 
-        # Row 2 — View toggle buttons + conditional compare-year picker
+        # Row 2 — View toggle buttons
         _btn_labels = ["Production", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
         _btn_to_view = {
             "Production":       "Production (bu)",
@@ -995,18 +995,18 @@ def main():
             "vs Selected Year": "Change vs Selected Year (%)",
             "vs 3-Yr Avg":      "Change vs 3-Yr Average (%)",
         }
-        rb_col, cy_col = st.columns([3.2, 0.9])
-        with rb_col:
-            nass_view_btn = st.radio(
-                "View", _btn_labels, horizontal=True,
-                key="nass_view", label_visibility="collapsed",
-            )
+        nass_view_btn = st.radio(
+            "View", _btn_labels, horizontal=True,
+            key="nass_view", label_visibility="collapsed",
+        )
         nass_view = _btn_to_view[nass_view_btn]
 
+        # Row 3 (conditional) — Compare-year picker, only shown for "vs Selected Year"
         if nass_view == "Change vs Selected Year (%)":
+            cy_col, _ = st.columns([0.55, 2.6])
             with cy_col:
                 avail_comp   = [y for y in NASS_YEARS if y != nass_year]
-                nass_comp_yr = st.selectbox("Compare Year", avail_comp, key="nass_comp_year")
+                nass_comp_yr = st.selectbox("Compare to Year", avail_comp, key="nass_comp_year")
         else:
             nass_comp_yr = None
 
