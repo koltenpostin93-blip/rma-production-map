@@ -202,8 +202,9 @@ def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
               "county_ansi", "prodn_practice_desc", "Value"]
     df = df[[c for c in needed if c in df.columns]].copy()
 
-    # Drop state-level aggregate rows (county_ansi flags)
+    # Drop state-level and aggregate rows (by ansi code and by name)
     df = df[~df["county_ansi"].isin(["998", "000", "999"])]
+    df = df[~df["county_name"].str.strip().str.lower().str.startswith("other")]
 
     df["Production"] = pd.to_numeric(
         df["Value"].str.replace(",", "", regex=False).str.strip(),
