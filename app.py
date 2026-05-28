@@ -232,13 +232,31 @@ def load_geojson():
 
 @st.cache_data
 def get_state_geojson(_geo, sfips: str) -> dict:
-    """Return a FeatureCollection filtered to a single state FIPS.
-    Cached so subsequent renders of the same state are instant.
+    """Return a FeatureCollection for one state with coordinates rounded to
+    3 decimal places (~100 m precision).  Rounding cuts Plotly figure JSON
+    by ~50 %, reducing serialisation time and browser render time.
     """
-    return {
-        "type": "FeatureCollection",
-        "features": [f for f in _geo["features"] if f["properties"]["STATE"] == sfips],
-    }
+    features = []
+    for f in _geo["features"]:
+        if f["properties"]["STATE"] != sfips:
+            continue
+        gtype = f["geometry"]["type"]
+        raw   = f["geometry"]["coordinates"]
+        if gtype == "Polygon":
+            coords = [[[round(x, 3), round(y, 3)] for x, y in ring]
+                      for ring in raw]
+        elif gtype == "MultiPolygon":
+            coords = [[[[round(x, 3), round(y, 3)] for x, y in ring]
+                       for ring in poly]
+                      for poly in raw]
+        else:
+            coords = raw
+        features.append({
+            "type": "Feature",
+            "properties": f["properties"],
+            "geometry": {"type": gtype, "coordinates": coords},
+        })
+    return {"type": "FeatureCollection", "features": features}
 
 
 @st.cache_data
@@ -683,6 +701,36 @@ def build_nass_ranking_chart(state_df, state, crop):
     return fig
 
 
+# ── Cached county figure wrappers ─────────────────────────────────────────────
+# Cache key = hashable args only.  _geo / _centroids / _logo are excluded
+# (underscore prefix) so large objects aren't hashed or pickled into the key.
+# The Figure object is stored in Streamlit's in-memory cache; repeat clicks on
+# the same state+crop are instant after the first render.
+
+@st.cache_data(show_spinner=False)
+def cached_nass_county_fig(state: str, crop: str, year: int,
+                            _geo, _centroids, _logo_50yr):
+    df_all   = load_nass_county(crop, year)
+    state_df = df_all[df_all["State"] == state].copy()
+    return build_nass_county_fig(state_df, _geo, state, crop, _logo_50yr, _centroids)
+
+
+@st.cache_data(show_spinner=False)
+def cached_rma_county_fig(state: str, crop: str, metric: str,
+                           practice: str, wheat_type,
+                           _geo, _fips_lk, _centroids, _logo_50yr):
+    rma_data = load_data()
+    if crop not in rma_data:
+        return None
+    df = rma_data[crop].copy()
+    if crop == "Wheat" and wheat_type:
+        df = df[df["Type"] == wheat_type]
+    agg        = agg_data(df[df["State"] == state], practice, metric, ["County"])
+    crop_label = f"Wheat — {wheat_type}" if crop == "Wheat" else crop
+    return build_county_fig(agg, _geo, _fips_lk, _centroids, state,
+                            metric, crop_label, practice, _logo_50yr)
+
+
 # ── App ────────────────────────────────────────────────────────────────────────
 def main():
     st.markdown(
@@ -837,8 +885,8 @@ def main():
                     )
                 else:
                     with st.spinner(f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"):
-                        nass_county_fig = build_nass_county_fig(
-                            state_df, geo, nass_state, nass_crop, logo_50yr, centroids
+                        nass_county_fig = cached_nass_county_fig(
+                            nass_state, nass_crop, 2025, geo, centroids, logo_50yr
                         )
                     if nass_county_fig is None:
                         st.info(f"County map not available for "
@@ -973,9 +1021,9 @@ def main():
                 st.warning(f"No data for {ABBR_TO_NAME.get(state, state)} with selected filters.")
             else:
                 with st.spinner(f"Building {ABBR_TO_NAME.get(state, state)} county map…"):
-                    fig = build_county_fig(
-                        agg, geo, fips_lk, centroids, state,
-                        metric, crop_label, practice, logo_50yr
+                    fig = cached_rma_county_fig(
+                        state, crop, metric, practice, wheat_type,
+                        geo, fips_lk, centroids, logo_50yr
                     )
                 if fig is None:
                     st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
