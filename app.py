@@ -10,7 +10,7 @@ import base64
 from pathlib import Path
 
 st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
-_CACHE_VERSION = "v5"   # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v6"   # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -28,6 +28,13 @@ NASS_CROP_PARAMS = {
     "Wheat":    {"commodity_desc": "WHEAT",   "class_desc": "ALL CLASSES"},
     "Sorghum":  {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
 }
+NASS_YEARS = [2025, 2024, 2023, 2022]
+NASS_VIEW_OPTS = [
+    "Production (bu)",
+    "Change vs Prior Year (%)",
+    "Change vs Selected Year (%)",
+    "Change vs 3-Yr Average (%)",
+]
 
 # ── State lookups ─────────────────────────────────────────────────────────────
 # RMA subset (used for county FIPS name-lookup only)
@@ -183,7 +190,7 @@ def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
         with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
     except Exception as e:
-        st.warning(f"NASS API error for {crop}: {e}")
+        st.warning(f"NASS API error for {crop} {year}: {e}")
         return pd.DataFrame(columns=["State", "County", "fips", "Production"])
 
     records = raw.get("data", [])
@@ -215,7 +222,6 @@ def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
     if "prodn_practice_desc" in df.columns:
         has_all = df[df["prodn_practice_desc"] == all_prac].copy()
         no_all  = df[~df["fips"].isin(has_all["fips"].unique())].copy()
-        # For counties without an aggregate row, keep the max-production row
         if not no_all.empty:
             no_all = no_all.loc[no_all.groupby(key)["Production"].idxmax()]
         df = pd.concat([has_all, no_all], ignore_index=True)
@@ -335,6 +341,115 @@ def format_nass_label(val):
     if pd.isna(val) or val == 0:
         return ""
     return f"{val / 1_000_000:.1f}"
+
+
+def format_nass_chg_label(val):
+    """Format a % change value for map labels, e.g. '+12.3%'."""
+    if pd.isna(val) or abs(val) < 0.05:
+        return ""
+    return f"{val:+.1f}%"
+
+
+# ── NASS view helpers ─────────────────────────────────────────────────────────
+def _nass_view_cfg(view: str) -> dict:
+    """Return render-config dict for a NASS view label."""
+    if view == "Production (bu)":
+        return {
+            "cscale":     "YlOrBr",
+            "diverging":  False,
+            "clabel":     "Production<br>(bu)",
+            "hover_fmt":  ":,.0f",
+            "hover_sfx":  " bu",
+            "label_unit": "M bu",
+            "label_fn":   format_nass_label,
+            "rank_unit":  "M bu",
+            "rank_div":   1_000_000,
+            "rank_fmt":   ",.2f",
+        }
+    return {
+        "cscale":     "RdYlGn",
+        "diverging":  True,
+        "clabel":     "Change (%)",
+        "hover_fmt":  ":+.1f",
+        "hover_sfx":  "%",
+        "label_unit": "% chg",
+        "label_fn":   format_nass_chg_label,
+        "rank_unit":  "%",
+        "rank_div":   1,
+        "rank_fmt":   "+.1f",
+    }
+
+
+def get_nass_view_data(crop: str, year: int, view: str, comp_year=None):
+    """
+    Load and compute the view metric.
+    Returns (county_df, state_df) each with a 'Value' column.
+      county_df: [State, County, Value]
+      state_df:  [State, Value]
+    Production view  → Value = production in bu (state-level sum).
+    Change views     → Value = % change vs the comparison period,
+                       computed at county AND state level from raw production
+                       (not averaged across county percentages).
+    """
+    df_cur = load_nass_county(crop, year)
+
+    if view == "Production (bu)" or df_cur.empty:
+        cdf = (df_cur.groupby(["State", "County"])["Production"]
+               .sum().reset_index().rename(columns={"Production": "Value"}))
+        sdf = (df_cur.groupby("State")["Production"]
+               .sum().reset_index().rename(columns={"Production": "Value"}))
+        return cdf, sdf
+
+    def _pct(cur_s, cmp_s):
+        return (cur_s - cmp_s) / cmp_s.replace(0, np.nan) * 100
+
+    if view == "Change vs Prior Year (%)":
+        df_cmp = load_nass_county(crop, year - 1)
+    elif view == "Change vs Selected Year (%)":
+        df_cmp = load_nass_county(crop, comp_year) if comp_year else df_cur
+    else:  # Change vs 3-Yr Average (%)
+        prior_years = [y for y in [year - 1, year - 2, year - 3] if y >= 2022]
+        frames = [load_nass_county(crop, y) for y in prior_years]
+        frames = [f for f in frames if not f.empty]
+        if not frames:
+            empty_c = pd.DataFrame(columns=["State", "County", "Value"])
+            empty_s = pd.DataFrame(columns=["State", "Value"])
+            return empty_c, empty_s
+        # County-level average production across prior years
+        avg_c = (pd.concat([d.groupby(["State", "County"])["Production"].sum().reset_index()
+                             for d in frames])
+                 .groupby(["State", "County"])["Production"].mean()
+                 .reset_index().rename(columns={"Production": "Base"}))
+        cur_c = df_cur.groupby(["State", "County"])["Production"].sum().reset_index()
+        mc = cur_c.merge(avg_c, on=["State", "County"], how="inner")
+        mc["Value"] = _pct(mc["Production"], mc["Base"])
+        cdf = mc[["State", "County", "Value"]].dropna(subset=["Value"])
+        # State-level average production across prior years
+        avg_s = (pd.concat([d.groupby("State")["Production"].sum().reset_index()
+                             for d in frames])
+                 .groupby("State")["Production"].mean()
+                 .reset_index().rename(columns={"Production": "Base"}))
+        cur_s = df_cur.groupby("State")["Production"].sum().reset_index()
+        ms = cur_s.merge(avg_s, on="State", how="inner")
+        ms["Value"] = _pct(ms["Production"], ms["Base"])
+        sdf = ms[["State", "Value"]].dropna(subset=["Value"])
+        return cdf, sdf
+
+    # Shared path for Prior Year and Selected Year
+    cur_c = df_cur.groupby(["State", "County"])["Production"].sum().reset_index()
+    cmp_c = (df_cmp.groupby(["State", "County"])["Production"].sum()
+             .reset_index().rename(columns={"Production": "Base"}))
+    mc = cur_c.merge(cmp_c, on=["State", "County"], how="inner")
+    mc["Value"] = _pct(mc["Production"], mc["Base"])
+    cdf = mc[["State", "County", "Value"]].dropna(subset=["Value"])
+
+    cur_s = df_cur.groupby("State")["Production"].sum().reset_index()
+    cmp_s = (df_cmp.groupby("State")["Production"].sum()
+             .reset_index().rename(columns={"Production": "Base"}))
+    ms = cur_s.merge(cmp_s, on="State", how="inner")
+    ms["Value"] = _pct(ms["Production"], ms["Base"])
+    sdf = ms[["State", "Value"]].dropna(subset=["Value"])
+    return cdf, sdf
 
 
 # ── Aggregation ───────────────────────────────────────────────────────────────
@@ -563,29 +678,42 @@ def build_ranking_chart(agg, metric, state):
 
 
 # ── NASS figure builders ──────────────────────────────────────────────────────
-def build_nass_state_fig(df, crop, logo_50yr):
-    agg = df.groupby("State")["Production"].sum().reset_index()
+def build_nass_state_fig(state_vdf, crop, year, view, logo_50yr):
+    """state_vdf has columns [State, Value] — pre-computed by get_nass_view_data."""
+    cfg = _nass_view_cfg(view)
+    agg = state_vdf.copy()
     agg["StateName"] = agg["State"].map(ABBR_TO_NAME)
 
-    title_text = f"NASS 2025 {crop} — Production<br><sup>Map labels in M bu</sup>"
+    title_text = (
+        f"NASS {year} {crop} — {view}"
+        f"<br><sup>Map labels in {cfg['label_unit']}</sup>"
+    )
+
+    px_kwargs = {}
+    if cfg["diverging"] and not agg["Value"].empty:
+        abs_max = max(float(agg["Value"].abs().max()), 1.0)
+        px_kwargs["range_color"]               = [-abs_max, abs_max]
+        px_kwargs["color_continuous_midpoint"] = 0.0
+
     fig = px.choropleth(
-        agg, locations="State", locationmode="USA-states", color="Production",
-        scope="usa", color_continuous_scale="YlOrBr",
+        agg, locations="State", locationmode="USA-states", color="Value",
+        scope="usa", color_continuous_scale=cfg["cscale"],
         hover_name="StateName",
-        hover_data={"Production": ":,.0f", "State": False},
-        labels={"Production": "Production (bu)"},
+        hover_data={"Value": cfg["hover_fmt"], "State": False},
+        labels={"Value": view},
+        **px_kwargs,
     )
     fig.update_layout(
         **_base_layout(title_text), height=520,
         geo=dict(showlakes=False, bgcolor=DARK, landcolor=LAND, showland=True, showframe=False),
         coloraxis_colorbar=dict(
-            title=dict(text="Production<br>(bu)", font=dict(color=TEXT)),
+            title=dict(text=cfg["clabel"], font=dict(color=TEXT)),
             tickfont=dict(color=TEXT),
         ),
     )
     lons, lats, texts = [], [], []
     for _, row in agg.iterrows():
-        label = format_nass_label(row["Production"])
+        label = cfg["label_fn"](row["Value"])
         if label and row["State"] in STATE_CENTROIDS:
             lon, lat = STATE_CENTROIDS[row["State"]]
             lons.append(lon); lats.append(lat); texts.append(label)
@@ -599,7 +727,10 @@ def build_nass_state_fig(df, crop, logo_50yr):
     return fig
 
 
-def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids, fips_lk):
+def build_nass_county_fig(county_vdf, geo, state, crop, year, view, logo_50yr, centroids, fips_lk):
+    """county_vdf has columns [State, County, Value] — pre-computed by get_nass_view_data."""
+    cfg = _nass_view_cfg(view)
+    state_df = county_vdf[county_vdf["State"] == state].copy()
     if state_df.empty:
         return None
 
@@ -607,27 +738,33 @@ def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids, fips
     if sfips is None:
         return None
 
-    # Re-resolve FIPS from county names via GeoJSON lookup — same pattern as
-    # build_county_fig (RMA). This guarantees the FIPS codes match the feature
-    # "id" field that Plotly uses to locate polygons, rather than relying on
-    # API-provided codes which may differ from the GeoJSON.
-    state_df = state_df.copy()
-    state_df["fips"] = state_df["County"].apply(
-        lambda c: resolve_fips(state, c, fips_lk)
-    )
+    # Resolve FIPS from county names via GeoJSON lookup — guarantees the codes
+    # match the feature "id" that Plotly uses to locate choropleth polygons.
+    state_df["fips"] = state_df["County"].apply(lambda c: resolve_fips(state, c, fips_lk))
     state_df = state_df.dropna(subset=["fips"])
     if state_df.empty:
         return None
 
     state_geo = get_state_geojson(geo, sfips)  # cached
-    all_fips = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
-                for f in state_geo["features"]]
+    all_fips  = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
+                 for f in state_geo["features"]]
 
-    z_vals = state_df["Production"].tolist()
-    z_min  = state_df["Production"].min()
-    z_max  = state_df["Production"].max()
-    if z_min == z_max:
-        z_min = 0
+    z_vals = state_df["Value"].tolist()
+    if cfg["diverging"]:
+        abs_max = max((abs(v) for v in z_vals if not pd.isna(v)), default=1.0)
+        abs_max = max(abs_max, 1.0)
+        z_min, z_max = -abs_max, abs_max
+    else:
+        z_min = min(z_vals) if z_vals else 0
+        z_max = max(z_vals) if z_vals else 1
+        if z_min == z_max:
+            z_min = 0
+
+    state_name = ABBR_TO_NAME.get(state, state)
+    title_text = (
+        f"NASS {year} {crop} — {view} | {state_name} Counties"
+        f"<br><sup>Map labels in {cfg['label_unit']}</sup>"
+    )
 
     county_line = dict(color="#3d5248", width=0.8)
     fig = go.Figure()
@@ -640,50 +777,49 @@ def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids, fips
     fig.add_trace(go.Choropleth(
         geojson=state_geo, featureidkey="id",
         locations=state_df["fips"].tolist(), z=z_vals,
-        colorscale="YlOrBr", zmin=z_min, zmax=z_max,
+        colorscale=cfg["cscale"], zmin=z_min, zmax=z_max,
         colorbar=dict(
-            title=dict(text="Production<br>(bu)", font=dict(color=TEXT)),
+            title=dict(text=cfg["clabel"], font=dict(color=TEXT)),
             tickfont=dict(color=TEXT),
         ),
         marker=dict(line=county_line),
         text=state_df["County"].tolist(),
-        hovertemplate="%{text}: %{z:,.0f} bu<extra></extra>",
+        hovertemplate=f"%{{text}}: %{{z{cfg['hover_fmt']}}}{cfg['hover_sfx']}<extra></extra>",
     ))
-
-    state_name = ABBR_TO_NAME.get(state, state)
-    title_text = (
-        f"NASS 2025 {crop} — Production | {state_name} Counties"
-        f"<br><sup>Map labels in M bu</sup>"
-    )
-    fig.update_geos(fitbounds="locations", visible=False,
-                    bgcolor=DARK, landcolor=LAND)
+    fig.update_geos(fitbounds="locations", visible=False, bgcolor=DARK, landcolor=LAND)
     fig.update_layout(**_base_layout(title_text), height=620)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
-    _place_labels(fig, state_df["fips"].tolist(), state_df["Production"].tolist(),
-                  centroids, format_nass_label)
+    _place_labels(fig, state_df["fips"].tolist(), state_df["Value"].tolist(),
+                  centroids, cfg["label_fn"])
     return fig
 
 
-def build_nass_ranking_chart(state_df, state, crop):
-    ranked     = state_df.dropna(subset=["Production"]).sort_values("Production", ascending=True)
+def build_nass_ranking_chart(ranked_df, state, crop, year, view):
+    """ranked_df: DataFrame with [County, Value] pre-filtered to a single state."""
+    cfg        = _nass_view_cfg(view)
     state_name = ABBR_TO_NAME.get(state, state)
-    raw_avg    = ranked["Production"].mean()
-    x_vals     = ranked["Production"] / 1_000_000
-    avg_disp   = raw_avg / 1_000_000
+    ranked     = ranked_df.dropna(subset=["Value"]).sort_values("Value", ascending=True)
+    if ranked.empty:
+        return go.Figure()
 
-    colors = [ACCENT if v >= raw_avg else "#e05252" for v in ranked["Production"]]
-    labels = [f"{v:,.2f}" for v in x_vals]
+    raw_avg  = ranked["Value"].mean()
+    x_vals   = ranked["Value"] / cfg["rank_div"]
+    avg_disp = raw_avg / cfg["rank_div"]
+    fmt      = cfg["rank_fmt"]
+
+    colors = [ACCENT if v >= raw_avg else "#e05252" for v in ranked["Value"]]
+    labels = [f"{v:{fmt}}" for v in x_vals]
 
     fig = go.Figure(go.Bar(
         x=x_vals, y=ranked["County"], orientation="h",
         marker_color=colors, marker_line_width=0,
         text=labels, textposition="outside",
         textfont=dict(color=TEXT, size=8), cliponaxis=False,
-        hovertemplate="%{y}: %{x:,.2f} M bu<extra></extra>",
+        hovertemplate=f"%{{y}}: %{{x:{fmt}}} {cfg['rank_unit']}<extra></extra>",
     ))
     fig.add_vline(
         x=avg_disp, line_color="#f5a623", line_width=1.5, line_dash="dash",
-        annotation_text=f"  Avg: {avg_disp:,.2f} M bu",
+        annotation_text=f"  Avg: {avg_disp:{fmt}} {cfg['rank_unit']}",
         annotation_position="top left",
         annotation_font=dict(color="#f5a623", size=10),
     )
@@ -691,30 +827,36 @@ def build_nass_ranking_chart(state_df, state, crop):
         paper_bgcolor=DARK, plot_bgcolor=SURFACE,
         font=dict(color=TEXT, family="Arial"),
         title=dict(
-            text=f"{state_name} County Rankings — {crop} Production (NASS 2025)",
+            text=f"{state_name} County Rankings — {crop} {view} (NASS {year})",
             font=dict(size=14, color=ACCENT),
         ),
         height=max(380, len(ranked) * 22 + 80),
         margin=dict(l=10, r=90, t=50, b=20), bargap=0.18,
-        xaxis=dict(title="Production (M bu)", gridcolor=BORDER,
-                   tickfont=dict(color=MUTED), title_font=dict(color=MUTED), zeroline=False),
+        xaxis=dict(
+            title=f"{view} ({cfg['rank_unit']})", gridcolor=BORDER,
+            tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
+            zeroline=True, zerolinecolor=MUTED,
+        ),
         yaxis=dict(gridcolor=BORDER, tickfont=dict(color=TEXT, size=9), automargin=True),
     )
     return fig
 
 
 # ── Cached county figure wrappers ─────────────────────────────────────────────
-# Cache key = hashable args only.  _geo / _centroids / _logo are excluded
-# (underscore prefix) so large objects aren't hashed or pickled into the key.
-# The Figure object is stored in Streamlit's in-memory cache; repeat clicks on
-# the same state+crop are instant after the first render.
+# Cache key = hashable args only.  _geo / _centroids / _logo / _fips_lk are
+# excluded (underscore prefix) so large objects aren't hashed into the key.
 
 @st.cache_data(show_spinner=False)
-def cached_nass_county_fig(state: str, crop: str, year: int, cache_ver: str,
+def cached_nass_county_fig(state: str, crop: str, year: int, view: str,
+                            comp_year: int, cache_ver: str,
                             _geo, _centroids, _logo_50yr, _fips_lk):
-    df_all   = load_nass_county(crop, year)
-    state_df = df_all[df_all["State"] == state].copy()
-    return build_nass_county_fig(state_df, _geo, state, crop, _logo_50yr, _centroids, _fips_lk)
+    # comp_year == 0 means "not applicable"; convert back to None for the helper
+    county_vdf, _ = get_nass_view_data(
+        crop, year, view, comp_year if comp_year > 0 else None
+    )
+    return build_nass_county_fig(
+        county_vdf, _geo, state, crop, year, view, _logo_50yr, _centroids, _fips_lk
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -809,26 +951,48 @@ def main():
         if "nass_sel_state" not in st.session_state:
             st.session_state.nass_sel_state = None
 
-        nc1, nc2, nc3 = st.columns([1, 1.8, 0.6])
+        nc1, nc2, nc3, nc4, nc5, nc6 = st.columns([1, 0.75, 1.4, 0.75, 1.8, 0.55])
         with nc1:
             nass_crop = st.selectbox("Crop", list(NASS_CROP_PARAMS.keys()), key="nass_crop")
+        with nc2:
+            nass_year = st.selectbox("Year", NASS_YEARS, index=0, key="nass_year")
         with nc3:
+            nass_view = st.selectbox("View / Stat", NASS_VIEW_OPTS, index=0, key="nass_view")
+        with nc4:
+            if nass_view == "Change vs Selected Year (%)":
+                avail_comp   = [y for y in NASS_YEARS if y != nass_year]
+                nass_comp_yr = st.selectbox("Compare Year", avail_comp, key="nass_comp_year")
+            else:
+                nass_comp_yr = None
+        with nc6:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             if st.button("🔄 Refresh", use_container_width=True, key="nass_refresh"):
                 st.cache_data.clear()
                 st.rerun()
 
-        with st.spinner(f"Loading NASS 2025 {nass_crop} data..."):
-            nass_df = load_nass_county(nass_crop)
+        with st.spinner(f"Loading NASS {nass_year} {nass_crop} data..."):
+            nass_df = load_nass_county(nass_crop, nass_year)
+            # Pre-warm cache for comparison years
+            if nass_view == "Change vs Prior Year (%)":
+                load_nass_county(nass_crop, nass_year - 1)
+            elif nass_view == "Change vs Selected Year (%)" and nass_comp_yr:
+                load_nass_county(nass_crop, nass_comp_yr)
+            elif nass_view == "Change vs 3-Yr Average (%)":
+                for _y in [nass_year - 1, nass_year - 2, nass_year - 3]:
+                    if _y >= 2022:
+                        load_nass_county(nass_crop, _y)
+            county_vdf, state_vdf = get_nass_view_data(
+                nass_crop, nass_year, nass_view, nass_comp_yr
+            )
 
         if nass_df.empty:
             st.warning(
-                f"No NASS 2025 county-level production data returned for {nass_crop}. "
+                f"No NASS {nass_year} county-level production data returned for {nass_crop}. "
                 "The data may not yet be published or the API parameters may need adjustment."
             )
         else:
             states_avail_nass = sorted(nass_df["State"].unique())
-            with nc2:
+            with nc5:
                 state_opts_nass = ["— US Overview —"] + [
                     f"{a}  —  {ABBR_TO_NAME.get(a, a)}" for a in states_avail_nass
                 ]
@@ -846,25 +1010,49 @@ def main():
                     None if nass_sel.startswith("—") else nass_sel[:2]
                 )
 
-            # Summary metrics
-            scope_nass = (
-                nass_df if st.session_state.nass_sel_state is None
-                else nass_df[nass_df["State"] == st.session_state.nass_sel_state]
-            )
-            nm1, nm2, nm3 = st.columns(3)
-            nm1.metric("Total Production", f"{scope_nass['Production'].sum():,.0f} bu")
-            nm2.metric("Counties Reporting",
-                       f"{scope_nass[['State','County']].drop_duplicates().shape[0]:,}")
-            nm3.metric("States", f"{scope_nass['State'].nunique():,}")
+            # ── Summary metrics ───────────────────────────────────────────────
+            sel_st     = st.session_state.nass_sel_state
+            scope_prod = (nass_df if sel_st is None
+                          else nass_df[nass_df["State"] == sel_st])
+            scope_v    = (county_vdf if sel_st is None
+                          else county_vdf[county_vdf["State"] == sel_st])
 
-            # Map / county drill-down
-            if st.session_state.nass_sel_state is None:
-                nass_fig = build_nass_state_fig(nass_df, nass_crop, logo_50yr)
-                st.plotly_chart(nass_fig, use_container_width=True, key="nass_state_map")
-                st.caption("Use the State Drill-Down dropdown above to view county detail.")
+            if nass_view == "Production (bu)":
+                nm1, nm2, nm3 = st.columns(3)
+                nm1.metric(f"{nass_year} Production",
+                           f"{scope_prod['Production'].sum():,.0f} bu")
+                nm2.metric("Counties Reporting",
+                           f"{scope_prod[['State','County']].drop_duplicates().shape[0]:,}")
+                nm3.metric("States", f"{scope_prod['State'].nunique():,}")
+            else:
+                nm1, nm2, nm3, nm4 = st.columns(4)
+                nm1.metric(f"{nass_year} Production",
+                           f"{scope_prod['Production'].sum():,.0f} bu")
+                valid_v  = scope_v["Value"].dropna()
+                avg_chg  = valid_v.mean() if not valid_v.empty else float("nan")
+                improved = int((valid_v > 0).sum())
+                declined = int((valid_v < 0).sum())
+                nm2.metric("Avg % Change",
+                           f"{avg_chg:+.1f}%" if not pd.isna(avg_chg) else "—")
+                nm3.metric("Counties Above Prior", f"{improved:,} ▲")
+                nm4.metric("Counties Below Prior", f"{declined:,} ▼")
+
+            # ── Map ───────────────────────────────────────────────────────────
+            if sel_st is None:
+                if state_vdf.empty:
+                    st.info(
+                        "No comparison data available for the selected view and year range. "
+                        "Try selecting a different year or view."
+                    )
+                else:
+                    nass_fig = build_nass_state_fig(
+                        state_vdf, nass_crop, nass_year, nass_view, logo_50yr
+                    )
+                    st.plotly_chart(nass_fig, use_container_width=True, key="nass_state_map")
+                    st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
             else:
-                nass_state = st.session_state.nass_sel_state
+                nass_state = sel_st
                 state_df   = nass_df[nass_df["State"] == nass_state].copy()
 
                 if st.button("← Back to US Map", key="nass_back_btn"):
@@ -873,19 +1061,24 @@ def main():
 
                 if state_df.empty or state_df["Production"].sum() == 0:
                     st.warning(
-                        f"No NASS 2025 county data available for "
+                        f"No NASS {nass_year} county data available for "
                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}. "
                         "This crop may not be produced in this state or data has not been published."
                     )
                 else:
-                    with st.spinner(f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"):
+                    with st.spinner(
+                        f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
+                    ):
                         nass_county_fig = cached_nass_county_fig(
-                            nass_state, nass_crop, 2025, _CACHE_VERSION,
-                            geo, centroids, logo_50yr, fips_lk
+                            nass_state, nass_crop, nass_year, nass_view,
+                            nass_comp_yr if nass_comp_yr else 0,
+                            _CACHE_VERSION, geo, centroids, logo_50yr, fips_lk
                         )
                     if nass_county_fig is None:
-                        st.info(f"County map not available for "
-                                f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
+                        st.info(
+                            f"County map not available for "
+                            f"{ABBR_TO_NAME.get(nass_state, nass_state)}."
+                        )
                     else:
                         st.plotly_chart(nass_county_fig, use_container_width=True,
                                         key="nass_county_map")
@@ -893,20 +1086,36 @@ def main():
 
                 st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                             unsafe_allow_html=True)
-                ranking_nass = build_nass_ranking_chart(state_df, nass_state, nass_crop)
-                st.plotly_chart(ranking_nass, use_container_width=True, key="nass_ranking")
+
+                # Ranking chart — switches between production and change view
+                state_county_v = county_vdf[county_vdf["State"] == nass_state].copy()
+                if not state_county_v.empty:
+                    ranking_nass = build_nass_ranking_chart(
+                        state_county_v, nass_state, nass_crop, nass_year, nass_view
+                    )
+                    st.plotly_chart(ranking_nass, use_container_width=True, key="nass_ranking")
 
                 with st.expander(
                     f"County Data Table — {ABBR_TO_NAME.get(nass_state, nass_state)}",
-                    expanded=False
+                    expanded=False,
                 ):
-                    disp = (state_df[["County", "Production"]]
-                            .sort_values("Production", ascending=False).copy())
-                    disp["Production (bu)"] = disp["Production"].apply(
+                    tbl = state_df[["County", "Production"]].sort_values(
+                        "Production", ascending=False
+                    ).copy()
+                    tbl["Production (bu)"] = tbl["Production"].apply(
                         lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
                     )
-                    st.dataframe(disp[["County", "Production (bu)"]],
-                                 use_container_width=True, hide_index=True)
+                    if nass_view != "Production (bu)" and not state_county_v.empty:
+                        chg = state_county_v[["County", "Value"]].copy()
+                        chg.columns = ["County", "Change (%)"]
+                        chg["Change (%)"] = chg["Change (%)"].apply(
+                            lambda v: f"{v:+.1f}%" if pd.notna(v) else "—"
+                        )
+                        tbl = tbl.merge(chg, on="County", how="left")
+                        show_cols = ["County", "Production (bu)", "Change (%)"]
+                    else:
+                        show_cols = ["County", "Production (bu)"]
+                    st.dataframe(tbl[show_cols], use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # RMA TAB
