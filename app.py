@@ -10,6 +10,7 @@ import base64
 from pathlib import Path
 
 st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
+_CACHE_VERSION = "v4"   # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -232,32 +233,16 @@ def load_geojson():
 
 @st.cache_data
 def get_state_geojson(_geo, sfips: str) -> dict:
-    """Return a FeatureCollection for one state with coordinates rounded to
-    3 decimal places (~100 m precision).  Rounding cuts Plotly figure JSON
-    by ~50 %, reducing serialisation time and browser render time.
+    """Return a cached FeatureCollection filtered to one state.
+    Returns the original feature objects unmodified so that every field
+    (including the top-level 'id' that Plotly uses to match choropleth
+    locations) is preserved exactly as it is in the source GeoJSON.
     """
-    features = []
-    for f in _geo["features"]:
-        if f["properties"]["STATE"] != sfips:
-            continue
-        gtype = f["geometry"]["type"]
-        raw   = f["geometry"]["coordinates"]
-        if gtype == "Polygon":
-            coords = [[[round(x, 3), round(y, 3)] for x, y in ring]
-                      for ring in raw]
-        elif gtype == "MultiPolygon":
-            coords = [[[[round(x, 3), round(y, 3)] for x, y in ring]
-                       for ring in poly]
-                      for poly in raw]
-        else:
-            coords = raw
-        features.append({
-            "type": "Feature",
-            "id": f.get("id"),          # Plotly matches choropleth locations by this field
-            "properties": f["properties"],
-            "geometry": {"type": gtype, "coordinates": coords},
-        })
-    return {"type": "FeatureCollection", "features": features}
+    return {
+        "type": "FeatureCollection",
+        "features": [f for f in _geo["features"]
+                     if f["properties"]["STATE"] == sfips],
+    }
 
 
 @st.cache_data
@@ -505,12 +490,14 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, pr
     county_line = dict(color="#3d5248", width=0.8)
     fig = go.Figure()
     fig.add_trace(go.Choropleth(
-        geojson=state_geo, locations=all_fips, z=[0] * len(all_fips),
+        geojson=state_geo, featureidkey="id",
+        locations=all_fips, z=[0] * len(all_fips),
         colorscale=[[0, PANEL], [1, PANEL]], showscale=False,
         marker=dict(line=county_line), hoverinfo="skip",
     ))
     fig.add_trace(go.Choropleth(
-        geojson=state_geo, locations=df["fips"].tolist(), z=z_vals,
+        geojson=state_geo, featureidkey="id",
+        locations=df["fips"].tolist(), z=z_vals,
         colorscale=COLOR_SCALE[metric], zmin=z_min, zmax=z_max,
         colorbar=dict(
             title=dict(text=f"{metric}<br>({unit})", font=dict(color=TEXT)),
@@ -526,7 +513,8 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, pr
         f"{crop_label} — {metric} | {state_name} Counties | Practice: {practice}"
         f"<br><sup>Map labels in {disp_unit}</sup>"
     )
-    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_geos(fitbounds="locations", visible=False,
+                    bgcolor=DARK, landcolor=LAND)
     fig.update_layout(**_base_layout(title_text), height=620)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
     _place_labels(fig, df["fips"].tolist(), df[col].tolist(), centroids, metric)
@@ -634,12 +622,14 @@ def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids):
     county_line = dict(color="#3d5248", width=0.8)
     fig = go.Figure()
     fig.add_trace(go.Choropleth(
-        geojson=state_geo, locations=all_fips, z=[0] * len(all_fips),
+        geojson=state_geo, featureidkey="id",
+        locations=all_fips, z=[0] * len(all_fips),
         colorscale=[[0, PANEL], [1, PANEL]], showscale=False,
         marker=dict(line=county_line), hoverinfo="skip",
     ))
     fig.add_trace(go.Choropleth(
-        geojson=state_geo, locations=state_df["fips"].tolist(), z=z_vals,
+        geojson=state_geo, featureidkey="id",
+        locations=state_df["fips"].tolist(), z=z_vals,
         colorscale="YlOrBr", zmin=z_min, zmax=z_max,
         colorbar=dict(
             title=dict(text="Production<br>(bu)", font=dict(color=TEXT)),
@@ -655,7 +645,8 @@ def build_nass_county_fig(state_df, geo, state, crop, logo_50yr, centroids):
         f"NASS 2025 {crop} — Production | {state_name} Counties"
         f"<br><sup>Map labels in M bu</sup>"
     )
-    fig.update_geos(fitbounds="locations", visible=False)
+    fig.update_geos(fitbounds="locations", visible=False,
+                    bgcolor=DARK, landcolor=LAND)
     fig.update_layout(**_base_layout(title_text), height=620)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
     _place_labels(fig, state_df["fips"].tolist(), state_df["Production"].tolist(),
@@ -709,7 +700,7 @@ def build_nass_ranking_chart(state_df, state, crop):
 # the same state+crop are instant after the first render.
 
 @st.cache_data(show_spinner=False)
-def cached_nass_county_fig(state: str, crop: str, year: int,
+def cached_nass_county_fig(state: str, crop: str, year: int, cache_ver: str,
                             _geo, _centroids, _logo_50yr):
     df_all   = load_nass_county(crop, year)
     state_df = df_all[df_all["State"] == state].copy()
@@ -718,7 +709,7 @@ def cached_nass_county_fig(state: str, crop: str, year: int,
 
 @st.cache_data(show_spinner=False)
 def cached_rma_county_fig(state: str, crop: str, metric: str,
-                           practice: str, wheat_type,
+                           practice: str, wheat_type, cache_ver: str,
                            _geo, _fips_lk, _centroids, _logo_50yr):
     rma_data = load_data()
     if crop not in rma_data:
@@ -879,7 +870,8 @@ def main():
                 else:
                     with st.spinner(f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"):
                         nass_county_fig = cached_nass_county_fig(
-                            nass_state, nass_crop, 2025, geo, centroids, logo_50yr
+                            nass_state, nass_crop, 2025, _CACHE_VERSION,
+                            geo, centroids, logo_50yr
                         )
                     if nass_county_fig is None:
                         st.info(f"County map not available for "
@@ -1004,7 +996,7 @@ def main():
             else:
                 with st.spinner(f"Building {ABBR_TO_NAME.get(state, state)} county map…"):
                     fig = cached_rma_county_fig(
-                        state, crop, metric, practice, wheat_type,
+                        state, crop, metric, practice, wheat_type, _CACHE_VERSION,
                         geo, fips_lk, centroids, logo_50yr
                     )
                 if fig is None:
