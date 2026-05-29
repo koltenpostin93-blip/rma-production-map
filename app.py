@@ -1244,6 +1244,25 @@ def main():
                 nm3.metric("Counties Above Prior", f"{improved:,} ▲")
                 nm4.metric("Counties Below Prior", f"{declined:,} ▼")
 
+            # ── Data diagnostic (collapsed — remove once issue resolved) ─────
+            if nass_metric == "Production (bu)" and nass_change == "Absolute":
+                with st.expander("🔍 Data Diagnostic", expanded=False):
+                    _raw_df    = load_nass_county(nass_crop, nass_year, _CACHE_VERSION)
+                    _raw_total = _raw_df["Production"].sum()
+                    _cdf_total = county_vdf["Value"].sum() if not county_vdf.empty else 0
+                    _sdf_total = state_vdf["Value"].sum() if not state_vdf.empty else 0
+                    _stat_total = stat_df["Value"].sum() if nass_metric == "Production (bu)" else 0
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("load_nass_county rows",   f"{len(_raw_df):,}")
+                    c2.metric("load_nass_county total",  f"{_raw_total/1e9:.3f} B bu")
+                    c3.metric("county_vdf total",        f"{_cdf_total/1e9:.3f} B bu")
+                    c4.metric("state_vdf total",         f"{_sdf_total/1e9:.3f} B bu")
+                    st.caption(
+                        f"stat_df total: {_stat_total/1e9:.3f} B bu  |  "
+                        f"nass_df total: {nass_df['Production'].sum()/1e9:.3f} B bu  |  "
+                        f"crop={nass_crop}  year={nass_year}  cache_ver={_CACHE_VERSION}"
+                    )
+
             # ── Map ───────────────────────────────────────────────────────────
             if sel_st is None:
                 if state_vdf.empty:
