@@ -28,7 +28,7 @@ _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % repor
 # Metrics available in the NASS tab
 NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres",
                     "Yield (bu/ac)", "Prevent Plant Acres"]
-NASS_CHANGE_OPTS = ["Absolute", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
+NASS_CHANGE_OPTS = ["Current Year", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
 
 _METRIC_TO_STAT = {
     "Production (bu)":    "production",
@@ -558,7 +558,7 @@ def format_nass_yield_label(val):
 # ── NASS view helpers ─────────────────────────────────────────────────────────
 def _nass_view_cfg(metric: str, change_view: str) -> dict:
     """Return render-config dict given a metric and change_view."""
-    if change_view != "Absolute":
+    if change_view != "Current Year":
         return {
             "cscale": "RdYlGn", "diverging": True, "clabel": "Change (%)",
             "hover_fmt": ":+.1f", "hover_sfx": "%", "label_unit": "% chg",
@@ -649,7 +649,7 @@ def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp
             return df.groupby("State")["Value"].mean().reset_index()
         return df.groupby("State")["Value"].sum().reset_index()
 
-    if change_view == "Absolute" or df_cur.empty:
+    if change_view == "Current Year" or df_cur.empty:
         return _agg_c(df_cur), _agg_s(df_cur)
 
     def _pct(cur_s, cmp_s):
@@ -921,7 +921,7 @@ def build_ranking_chart(agg, metric, state):
 def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
     """state_vdf has columns [State, Value] — pre-computed by get_nass_view_data."""
     cfg        = _nass_view_cfg(metric, change_view)
-    view_label = metric if change_view == "Absolute" else f"{change_view} — {metric}"
+    view_label = metric if change_view == "Current Year" else f"{change_view} — {metric}"
     agg        = state_vdf.copy()
     agg["StateName"] = agg["State"].map(ABBR_TO_NAME)
 
@@ -971,7 +971,7 @@ def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
 def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_view, logo_50yr, centroids, fips_lk):
     """county_vdf has columns [State, County, Value] — pre-computed by get_nass_view_data."""
     cfg        = _nass_view_cfg(metric, change_view)
-    view_label = metric if change_view == "Absolute" else f"{change_view} — {metric}"
+    view_label = metric if change_view == "Current Year" else f"{change_view} — {metric}"
     state_df   = county_vdf[county_vdf["State"] == state].copy()
     if state_df.empty:
         return None
@@ -1039,7 +1039,7 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_vie
 def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
     """ranked_df: DataFrame with [County, Value] pre-filtered to a single state."""
     cfg        = _nass_view_cfg(metric, change_view)
-    view_label = metric if change_view == "Absolute" else f"{change_view} — {metric}"
+    view_label = metric if change_view == "Current Year" else f"{change_view} — {metric}"
     state_name = ABBR_TO_NAME.get(state, state)
     ranked     = ranked_df.dropna(subset=["Value"]).sort_values("Value", ascending=True)
     if ranked.empty:
@@ -1284,7 +1284,7 @@ def main():
             )
             # Official state-level data for the state choropleth map
             _st_cur = load_nass_state(nass_crop, nass_year, stat_type, _CACHE_VERSION)
-            if nass_change == "Absolute" or _st_cur.empty:
+            if nass_change == "Current Year" or _st_cur.empty:
                 state_vdf = _st_cur
             elif nass_change == "vs Prior Year":
                 state_vdf = _state_pct_change(
@@ -1358,7 +1358,7 @@ def main():
                 v = df_state["Value"].sum()
                 return f"{v/1e9:.2f}B bu" if v >= 1e9 else f"{v/1e6:.1f}M bu"
 
-            if nass_change == "Absolute":
+            if nass_change == "Current Year":
                 nm1, nm2, nm3, nm4 = st.columns(4)
                 nm1.metric(f"{nass_year} {nass_metric}", _official_kpi_str(_kpi_state))
                 nm2.metric("County Coverage",
@@ -1449,7 +1449,7 @@ def main():
                         "Value", ascending=False
                     ).copy()
 
-                    if nass_change != "Absolute":
+                    if nass_change != "Current Year":
                         col_label = f"% Change ({nass_metric})"
                         tbl[col_label] = tbl["Value"].apply(
                             lambda v: f"{v:+.1f}%" if pd.notna(v) else "—"
