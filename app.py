@@ -1387,34 +1387,50 @@ def main():
                         "commodity_desc": "CORN", "util_practice_desc": "GRAIN",
                         "state_alpha": _diag_state, "year": str(nass_year), "format": "JSON",
                     }
+                    # Same query but with reference_period_desc=YEAR filter
+                    _diag_params_yr = {**_diag_params, "reference_period_desc": "YEAR"}
                     try:
                         import urllib.request as _ur
                         _diag_url = NASS_BASE_URL + "?" + urllib.parse.urlencode(_diag_params)
                         with _ur.urlopen(_diag_url, timeout=30) as _r:
                             _diag_raw = json.load(_r)
                         _diag_records = _diag_raw.get("data", [])
+
+                        _diag_url_yr = NASS_BASE_URL + "?" + urllib.parse.urlencode(_diag_params_yr)
+                        with _ur.urlopen(_diag_url_yr, timeout=30) as _r:
+                            _diag_raw_yr = json.load(_r)
+                        _diag_records_yr = _diag_raw_yr.get("data", [])
+
                         if _diag_records:
                             _diag_df = pd.DataFrame(_diag_records)
+                            # Show all distinguishing columns including reference_period_desc
                             _show_cols = [c for c in [
-                                "state_alpha", "short_desc", "prodn_practice_desc",
-                                "class_desc", "type_desc", "util_practice_desc",
-                                "domain_desc", "Value",
+                                "state_alpha", "reference_period_desc", "prodn_practice_desc",
+                                "short_desc", "class_desc", "util_practice_desc",
+                                "domain_desc", "load_time", "Value",
                             ] if c in _diag_df.columns]
                             _diag_df["_val_num"] = pd.to_numeric(
                                 _diag_df["Value"].str.replace(",", "", regex=False), errors="coerce"
                             )
-                            st.caption(f"{len(_diag_records)} raw rows returned for {_diag_state}")
+                            st.caption(
+                                f"**Without filter:** {len(_diag_records)} rows  |  "
+                                f"**With reference_period_desc=YEAR:** {len(_diag_records_yr)} rows"
+                            )
                             st.dataframe(
                                 _diag_df[_show_cols + ["_val_num"]].sort_values("_val_num", ascending=False),
                                 use_container_width=True, hide_index=True,
                             )
-                            st.caption(
-                                f"Our dedup picks (idxmax): "
-                                f"{_diag_df.loc[_diag_df['_val_num'].idxmax(), 'short_desc']} = "
-                                f"{_diag_df['_val_num'].max():,.0f} bu  |  "
-                                f"load_nass_state shows: "
-                                f"{_st_cur[_st_cur['State']==_diag_state]['Value'].sum():,.0f} bu"
-                            )
+                            if _diag_records_yr:
+                                _diag_df_yr = pd.DataFrame(_diag_records_yr)
+                                _diag_df_yr["_val_num"] = pd.to_numeric(
+                                    _diag_df_yr["Value"].str.replace(",", "", regex=False), errors="coerce"
+                                )
+                                st.caption(
+                                    f"reference_period_desc=YEAR result: "
+                                    f"{_diag_df_yr['_val_num'].max():,.0f} bu  |  "
+                                    f"idxmax (current): {_diag_df['_val_num'].max():,.0f} bu  |  "
+                                    f"load_nass_state: {_st_cur[_st_cur['State']==_diag_state]['Value'].sum():,.0f} bu"
+                                )
                         else:
                             st.info("No rows returned for this state/year.")
                     except Exception as _e:
