@@ -523,6 +523,16 @@ def _nass_view_cfg(metric: str, change_view: str) -> dict:
     return _abs_cfgs[metric]
 
 
+def _load_for_metric(crop: str, year: int, stat_type: str) -> pd.DataFrame:
+    """Return [State, County, fips, Value] for any stat type.
+    Production is routed through load_nass_county (its own validated API call)
+    to guarantee correct figures; all other stats go through load_nass_stat.
+    """
+    if stat_type == "production":
+        return load_nass_county(crop, year).rename(columns={"Production": "Value"})
+    return load_nass_stat(crop, year, stat_type)
+
+
 def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp_year=None):
     """
     Load and compute the view metric for any metric + change_view combination.
@@ -531,7 +541,7 @@ def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp
     Change views   → Value = % change vs comparison period.
     """
     stat_type = _METRIC_TO_STAT[metric]
-    df_cur    = load_nass_stat(crop, year, stat_type)
+    df_cur    = _load_for_metric(crop, year, stat_type)
 
     def _agg_c(df):
         if metric == "Yield (bu/ac)":
@@ -550,12 +560,12 @@ def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp
         return (cur_s - cmp_s) / cmp_s.replace(0, np.nan) * 100
 
     if change_view == "vs Prior Year":
-        df_cmp = load_nass_stat(crop, year - 1, stat_type)
+        df_cmp = _load_for_metric(crop, year - 1, stat_type)
     elif change_view == "vs Selected Year":
-        df_cmp = load_nass_stat(crop, comp_year, stat_type) if comp_year else df_cur
+        df_cmp = _load_for_metric(crop, comp_year, stat_type) if comp_year else df_cur
     else:  # vs 3-Yr Avg
         prior_years = [y for y in [year - 1, year - 2, year - 3] if y >= 2022]
-        frames = [load_nass_stat(crop, y, stat_type) for y in prior_years]
+        frames = [_load_for_metric(crop, y, stat_type) for y in prior_years]
         frames = [f for f in frames if not f.empty]
         if not frames:
             return pd.DataFrame(columns=["State", "County", "Value"]), pd.DataFrame(columns=["State", "Value"])
@@ -1158,15 +1168,15 @@ def main():
 
         with st.spinner(f"Loading NASS {nass_year} {nass_crop} {nass_metric}..."):
             nass_df = load_nass_county(nass_crop, nass_year)   # production — for state availability
-            # Pre-warm comparison years for selected metric
+            # Pre-warm comparison years for the selected metric
             if nass_change == "vs Prior Year":
-                load_nass_stat(nass_crop, nass_year - 1, stat_type)
+                _load_for_metric(nass_crop, nass_year - 1, stat_type)
             elif nass_change == "vs Selected Year" and nass_comp_yr:
-                load_nass_stat(nass_crop, nass_comp_yr, stat_type)
+                _load_for_metric(nass_crop, nass_comp_yr, stat_type)
             elif nass_change == "vs 3-Yr Avg":
                 for _y in [nass_year - 1, nass_year - 2, nass_year - 3]:
                     if _y >= 2022:
-                        load_nass_stat(nass_crop, _y, stat_type)
+                        _load_for_metric(nass_crop, _y, stat_type)
             county_vdf, state_vdf = get_nass_view_data(
                 nass_crop, nass_year, nass_metric, nass_change, nass_comp_yr
             )
@@ -1198,8 +1208,8 @@ def main():
 
             # ── Summary metrics ───────────────────────────────────────────────
             sel_st    = st.session_state.nass_sel_state
-            # Load absolute stat values for the KPI card (cache is warm)
-            stat_df   = load_nass_stat(nass_crop, nass_year, stat_type)
+            # Load absolute stat values for the KPI card
+            stat_df   = _load_for_metric(nass_crop, nass_year, stat_type)
             scope_stat = stat_df if sel_st is None else stat_df[stat_df["State"] == sel_st]
             scope_prod = nass_df if sel_st is None else nass_df[nass_df["State"] == sel_st]
             scope_v   = county_vdf if sel_st is None else county_vdf[county_vdf["State"] == sel_st]
