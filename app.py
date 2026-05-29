@@ -784,7 +784,7 @@ def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
         scope="usa", color_continuous_scale=cfg["cscale"],
         hover_name="StateName",
         hover_data={"Value": cfg["hover_fmt"], "State": False},
-        labels={"Value": view},
+        labels={"Value": view_label},
         **px_kwargs,
     )
     fig.update_layout(
