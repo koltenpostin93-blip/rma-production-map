@@ -337,10 +337,12 @@ def load_nass_state(crop: str, year: int, stat_type: str,
     ).fillna(0)
     df["State"] = df["state_alpha"].str.strip()
 
-    # Keep only 2-letter state abbreviations (drops US-total, "OTHER STATES", etc.)
-    df = df[df["State"].str.len() == 2]
+    # Keep only known 50-state abbreviations — explicitly excludes "US" (national
+    # total), "PR", "GU", "VI", "OTHER STATES", etc.  If we kept "US" it would be
+    # summed alongside the 50 states and inflate the national total ~2×.
+    df = df[df["State"].isin(set(STATE_FIPS_ALL.keys()))]
 
-    # Dedup: prefer ALL PRODUCTION PRACTICES; fallback to max-value row
+    # Dedup step 1: prefer ALL PRODUCTION PRACTICES row; fallback to max-value row
     all_prac = "ALL PRODUCTION PRACTICES"
     if "prodn_practice_desc" in df.columns:
         has_all = df[df["prodn_practice_desc"] == all_prac].copy()
@@ -348,6 +350,11 @@ def load_nass_state(crop: str, year: int, stat_type: str,
         if not no_all.empty:
             no_all = no_all.loc[no_all.groupby("State")["Value"].idxmax()]
         df = pd.concat([has_all, no_all], ignore_index=True)
+
+    # Dedup step 2: guarantee exactly ONE row per state.  NASS can return multiple
+    # "ALL PRODUCTION PRACTICES" rows per state (e.g. different short_desc values);
+    # keeping them all causes duplicate map labels and an inflated national total.
+    df = df.loc[df.groupby("State")["Value"].idxmax()].reset_index(drop=True)
 
     return df[["State", "Value"]].reset_index(drop=True)
 
