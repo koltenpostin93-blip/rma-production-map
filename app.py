@@ -8,8 +8,14 @@ import urllib.parse
 import numpy as np
 import base64
 from pathlib import Path
+from PIL import Image
 
-st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
+_HERE = Path(__file__).parent
+st.set_page_config(
+    page_title="USDA County Production Dashboard",
+    page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
+    layout="wide",
+)
 _CACHE_VERSION = "v9"   # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
