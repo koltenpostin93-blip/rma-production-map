@@ -289,9 +289,60 @@ def load_nass_stat(crop: str, year: int, stat_type: str) -> pd.DataFrame:
 
 @st.cache_data
 def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
-    """Thin wrapper: loads production data with a 'Production' column."""
-    df = load_nass_stat(crop, year, "production")
-    return df.rename(columns={"Value": "Production"})
+    """Load county-level production data.  Kept as a standalone function
+    (not delegating to load_nass_stat) to avoid Streamlit cache-within-cache
+    issues that can cause stale or incorrect return values.
+    Returns [State, County, fips, Production].
+    """
+    params = {
+        "key":               NASS_API_KEY,
+        "source_desc":       "SURVEY",
+        "sector_desc":       "CROPS",
+        "statisticcat_desc": "PRODUCTION",
+        "unit_desc":         "BU",
+        "agg_level_desc":    "COUNTY",
+        "year":              str(year),
+        "format":            "JSON",
+    }
+    params.update(NASS_CROP_PARAMS[crop])
+    url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=45) as r:
+            raw = json.load(r)
+    except Exception as e:
+        st.warning(f"NASS API error for {crop} {year}: {e}")
+        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
+
+    records = raw.get("data", [])
+    if not records:
+        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
+
+    df = pd.DataFrame(records)
+    needed = ["state_alpha", "county_name", "state_fips_code",
+              "county_ansi", "prodn_practice_desc", "Value"]
+    df = df[[c for c in needed if c in df.columns]].copy()
+
+    df = df[~df["county_ansi"].isin(["998", "000", "999"])]
+    df = df[~df["county_name"].str.strip().str.lower().str.startswith("other")]
+
+    df["Production"] = pd.to_numeric(
+        df["Value"].str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    ).fillna(0)
+    df["fips"]   = df["state_fips_code"].str.zfill(2) + df["county_ansi"].str.zfill(3)
+    df["State"]  = df["state_alpha"].str.strip()
+    df["County"] = df["county_name"].str.strip().str.title()
+
+    key      = ["State", "County", "fips"]
+    all_prac = "ALL PRODUCTION PRACTICES"
+    if "prodn_practice_desc" in df.columns:
+        has_all = df[df["prodn_practice_desc"] == all_prac].copy()
+        no_all  = df[~df["fips"].isin(has_all["fips"].unique())].copy()
+        if not no_all.empty:
+            no_all = no_all.loc[no_all.groupby(key)["Production"].idxmax()]
+        df = pd.concat([has_all, no_all], ignore_index=True)
+
+    return df[key + ["Production"]].reset_index(drop=True)
 
 
 # ── GeoJSON & lookups ─────────────────────────────────────────────────────────
