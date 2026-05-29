@@ -1249,17 +1249,21 @@ def main():
                 with st.expander("🔍 Data Diagnostic", expanded=False):
                     _raw_df    = load_nass_county(nass_crop, nass_year, _CACHE_VERSION)
                     _raw_total = _raw_df["Production"].sum()
-                    _cdf_total = county_vdf["Value"].sum() if not county_vdf.empty else 0
-                    _sdf_total = state_vdf["Value"].sum() if not state_vdf.empty else 0
-                    _stat_total = stat_df["Value"].sum() if nass_metric == "Production (bu)" else 0
+                    # Count how many counties came back without an ALL row
+                    if "prodn_practice_desc" in _raw_df.columns:
+                        _no_all_n = _raw_df[_raw_df.get("prodn_practice_desc","") != "ALL PRODUCTION PRACTICES"].shape[0]
+                    else:
+                        _no_all_n = 0
+                    # Also pull prior year for comparison
+                    _py_df    = load_nass_county(nass_crop, nass_year - 1, _CACHE_VERSION)
+                    _py_total = _py_df["Production"].sum()
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("load_nass_county rows",   f"{len(_raw_df):,}")
-                    c2.metric("load_nass_county total",  f"{_raw_total/1e9:.3f} B bu")
-                    c3.metric("county_vdf total",        f"{_cdf_total/1e9:.3f} B bu")
-                    c4.metric("state_vdf total",         f"{_sdf_total/1e9:.3f} B bu")
+                    c1.metric(f"{nass_year} county rows",    f"{len(_raw_df):,}")
+                    c2.metric(f"{nass_year} county total",   f"{_raw_total/1e9:.3f} B bu")
+                    c3.metric(f"{nass_year - 1} county rows",f"{len(_py_df):,}")
+                    c4.metric(f"{nass_year - 1} county total",f"{_py_total/1e9:.3f} B bu")
                     st.caption(
-                        f"stat_df total: {_stat_total/1e9:.3f} B bu  |  "
-                        f"nass_df total: {nass_df['Production'].sum()/1e9:.3f} B bu  |  "
+                        f"Non-ALL-PRACTICES rows kept (idxmax): {_no_all_n}  |  "
                         f"crop={nass_crop}  year={nass_year}  cache_ver={_CACHE_VERSION}"
                     )
 
