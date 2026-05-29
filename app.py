@@ -1374,6 +1374,52 @@ def main():
                 nm3.metric("Counties Above Prior", f"{improved:,} ▲")
                 nm4.metric("Counties Below Prior", f"{declined:,} ▼")
 
+            # ── State-level data diagnostic (corn production only) ───────────
+            if nass_metric == "Production (bu)" and nass_change == "Absolute":
+                with st.expander("🔍 Raw State API Diagnostic (remove when resolved)", expanded=False):
+                    _diag_state = st.selectbox("Inspect state", sorted(STATE_FIPS_ALL.keys()),
+                                               index=sorted(STATE_FIPS_ALL.keys()).index("IA"),
+                                               key="diag_state_pick")
+                    _diag_params = {
+                        "key": NASS_API_KEY, "source_desc": "SURVEY", "sector_desc": "CROPS",
+                        "agg_level_desc": "STATE", "domain_desc": "TOTAL",
+                        "statisticcat_desc": "PRODUCTION", "unit_desc": "BU",
+                        "commodity_desc": "CORN", "util_practice_desc": "GRAIN",
+                        "state_alpha": _diag_state, "year": str(nass_year), "format": "JSON",
+                    }
+                    try:
+                        import urllib.request as _ur
+                        _diag_url = NASS_BASE_URL + "?" + urllib.parse.urlencode(_diag_params)
+                        with _ur.urlopen(_diag_url, timeout=30) as _r:
+                            _diag_raw = json.load(_r)
+                        _diag_records = _diag_raw.get("data", [])
+                        if _diag_records:
+                            _diag_df = pd.DataFrame(_diag_records)
+                            _show_cols = [c for c in [
+                                "state_alpha", "short_desc", "prodn_practice_desc",
+                                "class_desc", "type_desc", "util_practice_desc",
+                                "domain_desc", "Value",
+                            ] if c in _diag_df.columns]
+                            _diag_df["_val_num"] = pd.to_numeric(
+                                _diag_df["Value"].str.replace(",", "", regex=False), errors="coerce"
+                            )
+                            st.caption(f"{len(_diag_records)} raw rows returned for {_diag_state}")
+                            st.dataframe(
+                                _diag_df[_show_cols + ["_val_num"]].sort_values("_val_num", ascending=False),
+                                use_container_width=True, hide_index=True,
+                            )
+                            st.caption(
+                                f"Our dedup picks (idxmax): "
+                                f"{_diag_df.loc[_diag_df['_val_num'].idxmax(), 'short_desc']} = "
+                                f"{_diag_df['_val_num'].max():,.0f} bu  |  "
+                                f"load_nass_state shows: "
+                                f"{_st_cur[_st_cur['State']==_diag_state]['Value'].sum():,.0f} bu"
+                            )
+                        else:
+                            st.info("No rows returned for this state/year.")
+                    except Exception as _e:
+                        st.error(f"API error: {_e}")
+
             # ── Map ───────────────────────────────────────────────────────────
             if sel_st is None:
                 if state_vdf.empty:
