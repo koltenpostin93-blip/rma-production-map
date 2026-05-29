@@ -22,7 +22,8 @@ LOGO_FULL  = HERE / "assets" / "logo-full.png"
 # ── NASS API ───────────────────────────────────────────────────────────────────
 NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
 NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
-NASS_YEARS    = [2025, 2024, 2023, 2022]
+NASS_YEARS             = [2025, 2024, 2023, 2022]
+_NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % reporting KPI
 
 # Metrics available in the NASS tab
 NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres",
@@ -289,6 +290,69 @@ def load_nass_stat(crop: str, year: int, stat_type: str,
 
 
 @st.cache_data
+def load_nass_state(crop: str, year: int, stat_type: str,
+                    cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
+    """Query NASS at STATE level for official state-reported totals.
+    Uses domain_desc=TOTAL so we get the main survey figures, not organic
+    or other sub-domain breakdowns.
+    Returns DataFrame with [State, Value] — one row per state.
+    """
+    params = {
+        "key":            NASS_API_KEY,
+        "source_desc":    "SURVEY",
+        "sector_desc":    "CROPS",
+        "agg_level_desc": "STATE",
+        "domain_desc":    "TOTAL",
+        "year":           str(year),
+        "format":         "JSON",
+    }
+    params.update(NASS_STAT_BASE[stat_type])
+    params.update(NASS_CROP_STAT_PARAMS[crop][stat_type])
+    url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=45) as r:
+            raw = json.load(r)
+    except Exception as e:
+        st.warning(f"NASS state API error for {crop} {year} {stat_type}: {e}")
+        return pd.DataFrame(columns=["State", "Value"])
+
+    records = raw.get("data", [])
+    if not records:
+        return pd.DataFrame(columns=["State", "Value"])
+
+    df = pd.DataFrame(records)
+    needed = ["state_alpha", "prodn_practice_desc", "short_desc", "Value"]
+    df = df[[c for c in needed if c in df.columns]].copy()
+
+    # For prevent_plant: keep only rows whose short_desc contains "PREVENT"
+    if stat_type == "prevent_plant":
+        if "short_desc" in df.columns:
+            df = df[df["short_desc"].str.upper().str.contains("PREVENT", na=False)]
+        if df.empty:
+            return pd.DataFrame(columns=["State", "Value"])
+
+    df["Value"] = pd.to_numeric(
+        df["Value"].str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    ).fillna(0)
+    df["State"] = df["state_alpha"].str.strip()
+
+    # Keep only 2-letter state abbreviations (drops US-total, "OTHER STATES", etc.)
+    df = df[df["State"].str.len() == 2]
+
+    # Dedup: prefer ALL PRODUCTION PRACTICES; fallback to max-value row
+    all_prac = "ALL PRODUCTION PRACTICES"
+    if "prodn_practice_desc" in df.columns:
+        has_all = df[df["prodn_practice_desc"] == all_prac].copy()
+        no_all  = df[~df["State"].isin(has_all["State"].unique())].copy()
+        if not no_all.empty:
+            no_all = no_all.loc[no_all.groupby("State")["Value"].idxmax()]
+        df = pd.concat([has_all, no_all], ignore_index=True)
+
+    return df[["State", "Value"]].reset_index(drop=True)
+
+
+@st.cache_data
 def load_nass_county(crop: str, year: int = 2025,
                      cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
     """Load county-level production data.  Kept as a standalone function
@@ -523,6 +587,25 @@ def _nass_view_cfg(metric: str, change_view: str) -> dict:
         },
     }
     return _abs_cfgs[metric]
+
+
+def _state_pct_change(cur_df: pd.DataFrame, cmp_df: pd.DataFrame) -> pd.DataFrame:
+    """Compute state-level % change: (cur - cmp) / cmp * 100.
+    Both inputs are [State, Value]. Returns [State, Value] with % change."""
+    mc = cur_df.merge(cmp_df.rename(columns={"Value": "Base"}), on="State", how="inner")
+    mc["Value"] = (mc["Value"] - mc["Base"]) / mc["Base"].replace(0, np.nan) * 100
+    return mc[["State", "Value"]].dropna(subset=["Value"])
+
+
+def _state_pct_change_avg(cur_df: pd.DataFrame, frames: list) -> pd.DataFrame:
+    """Compute state-level % change vs average of a list of prior-year DataFrames."""
+    if not frames:
+        return pd.DataFrame(columns=["State", "Value"])
+    avg = (pd.concat(frames).groupby("State")["Value"].mean()
+           .reset_index().rename(columns={"Value": "Base"}))
+    mc = cur_df.merge(avg, on="State", how="inner")
+    mc["Value"] = (mc["Value"] - mc["Base"]) / mc["Base"].replace(0, np.nan) * 100
+    return mc[["State", "Value"]].dropna(subset=["Value"])
 
 
 def _load_for_metric(crop: str, year: int, stat_type: str) -> pd.DataFrame:
@@ -1169,19 +1252,45 @@ def main():
         stat_type = _METRIC_TO_STAT[nass_metric]
 
         with st.spinner(f"Loading NASS {nass_year} {nass_crop} {nass_metric}..."):
-            nass_df = load_nass_county(nass_crop, nass_year, _CACHE_VERSION)   # production — for state availability
-            # Pre-warm comparison years for the selected metric
+            nass_df = load_nass_county(nass_crop, nass_year, _CACHE_VERSION)   # county data — for drill-down & coverage KPI
+            # Pre-warm 2023 benchmark county count
+            load_nass_county(nass_crop, _NASS_BENCHMARK_YEAR, _CACHE_VERSION)
+            # Pre-warm comparison years for county and state data
             if nass_change == "vs Prior Year":
                 _load_for_metric(nass_crop, nass_year - 1, stat_type)
+                load_nass_state(nass_crop, nass_year - 1, stat_type, _CACHE_VERSION)
             elif nass_change == "vs Selected Year" and nass_comp_yr:
                 _load_for_metric(nass_crop, nass_comp_yr, stat_type)
+                load_nass_state(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION)
             elif nass_change == "vs 3-Yr Avg":
                 for _y in [nass_year - 1, nass_year - 2, nass_year - 3]:
                     if _y >= 2022:
                         _load_for_metric(nass_crop, _y, stat_type)
-            county_vdf, state_vdf = get_nass_view_data(
+                        load_nass_state(nass_crop, _y, stat_type, _CACHE_VERSION)
+            # County-level data for the county map
+            county_vdf, _ = get_nass_view_data(
                 nass_crop, nass_year, nass_metric, nass_change, nass_comp_yr
             )
+            # Official state-level data for the state choropleth map
+            _st_cur = load_nass_state(nass_crop, nass_year, stat_type, _CACHE_VERSION)
+            if nass_change == "Absolute" or _st_cur.empty:
+                state_vdf = _st_cur
+            elif nass_change == "vs Prior Year":
+                state_vdf = _state_pct_change(
+                    _st_cur,
+                    load_nass_state(nass_crop, nass_year - 1, stat_type, _CACHE_VERSION),
+                )
+            elif nass_change == "vs Selected Year" and nass_comp_yr:
+                state_vdf = _state_pct_change(
+                    _st_cur,
+                    load_nass_state(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION),
+                )
+            else:  # vs 3-Yr Avg
+                _sy = [y for y in [nass_year - 1, nass_year - 2, nass_year - 3] if y >= 2022]
+                state_vdf = _state_pct_change_avg(
+                    _st_cur,
+                    [load_nass_state(nass_crop, y, stat_type, _CACHE_VERSION) for y in _sy],
+                )
 
         if nass_df.empty:
             st.warning(
@@ -1209,63 +1318,54 @@ def main():
                 )
 
             # ── Summary metrics ───────────────────────────────────────────────
-            sel_st    = st.session_state.nass_sel_state
-            # Load absolute stat values for the KPI card
-            stat_df   = _load_for_metric(nass_crop, nass_year, stat_type)
-            scope_stat = stat_df if sel_st is None else stat_df[stat_df["State"] == sel_st]
-            scope_prod = nass_df if sel_st is None else nass_df[nass_df["State"] == sel_st]
-            scope_v   = county_vdf if sel_st is None else county_vdf[county_vdf["State"] == sel_st]
+            sel_st = st.session_state.nass_sel_state
 
-            def _metric_kpi_str(df_stat):
+            # Official state-level totals — used for KPI (state map already uses state_vdf)
+            _kpi_state = _st_cur if sel_st is None else _st_cur[_st_cur["State"] == sel_st]
+
+            # County coverage % — current year vs 2023 benchmark
+            _bench_df  = load_nass_county(nass_crop, _NASS_BENCHMARK_YEAR, _CACHE_VERSION)
+            if sel_st is None:
+                _bench_n = len(_bench_df)
+                _curr_n  = len(nass_df)
+            else:
+                _bench_n = len(_bench_df[_bench_df["State"] == sel_st])
+                _curr_n  = len(nass_df[nass_df["State"] == sel_st])
+            _pct_rep = _curr_n / _bench_n * 100 if _bench_n > 0 else 0.0
+
+            scope_v = county_vdf if sel_st is None else county_vdf[county_vdf["State"] == sel_st]
+
+            def _official_kpi_str(df_state):
+                """Format the official KPI value from state-level NASS data."""
                 if nass_metric == "Yield (bu/ac)":
-                    v = df_stat["Value"].mean()
+                    v = df_state["Value"].mean()
                     return f"{v:.1f} bu/ac" if not pd.isna(v) else "—"
                 if nass_metric in ("Planted Acres", "Harvested Acres", "Prevent Plant Acres"):
-                    v = df_stat["Value"].sum()
-                    return f"{v/1e6:.2f}M ac"
-                v = df_stat["Value"].sum()
-                return f"{v:,.0f} bu"
+                    v = df_state["Value"].sum()
+                    return f"{v/1e6:.1f}M ac"
+                # Production
+                v = df_state["Value"].sum()
+                return f"{v/1e9:.2f}B bu" if v >= 1e9 else f"{v/1e6:.1f}M bu"
 
             if nass_change == "Absolute":
-                nm1, nm2, nm3 = st.columns(3)
-                nm1.metric(f"{nass_year} {nass_metric}", _metric_kpi_str(scope_stat))
-                nm2.metric("Counties Reporting",
-                           f"{scope_stat[['State','County']].drop_duplicates().shape[0]:,}")
-                nm3.metric("States", f"{scope_stat['State'].nunique():,}")
+                nm1, nm2, nm3, nm4 = st.columns(4)
+                nm1.metric(f"{nass_year} {nass_metric}", _official_kpi_str(_kpi_state))
+                nm2.metric("County Coverage",
+                           f"{_pct_rep:.0f}%",
+                           help=f"{_curr_n:,} counties reporting vs {_bench_n:,} in {_NASS_BENCHMARK_YEAR} benchmark")
+                nm3.metric("Counties Reporting", f"{_curr_n:,}")
+                nm4.metric("States in Data", f"{_st_cur['State'].nunique():,}")
             else:
                 nm1, nm2, nm3, nm4 = st.columns(4)
-                nm1.metric(f"{nass_year} {nass_metric}", _metric_kpi_str(scope_stat))
+                nm1.metric(f"{nass_year} {nass_metric}", _official_kpi_str(_kpi_state))
+                nm2.metric("County Coverage", f"{_pct_rep:.0f}%",
+                           help=f"{_curr_n:,} of {_bench_n:,} counties reporting")
                 valid_v  = scope_v["Value"].dropna()
                 avg_chg  = valid_v.mean() if not valid_v.empty else float("nan")
                 improved = int((valid_v > 0).sum())
                 declined = int((valid_v < 0).sum())
-                nm2.metric("Avg % Change",
-                           f"{avg_chg:+.1f}%" if not pd.isna(avg_chg) else "—")
                 nm3.metric("Counties Above Prior", f"{improved:,} ▲")
                 nm4.metric("Counties Below Prior", f"{declined:,} ▼")
-
-            # ── Data diagnostic (collapsed — remove once issue resolved) ─────
-            if nass_metric == "Production (bu)" and nass_change == "Absolute":
-                with st.expander("🔍 Data Diagnostic", expanded=False):
-                    _raw_df    = load_nass_county(nass_crop, nass_year, _CACHE_VERSION)
-                    _raw_total = _raw_df["Production"].sum()
-                    # Count how many counties came back without an ALL row
-                    if "prodn_practice_desc" in _raw_df.columns:
-                        _no_all_n = _raw_df[_raw_df.get("prodn_practice_desc","") != "ALL PRODUCTION PRACTICES"].shape[0]
-                    else:
-                        _no_all_n = 0
-                    # Also pull prior year for comparison
-                    _py_df    = load_nass_county(nass_crop, nass_year - 1, _CACHE_VERSION)
-                    _py_total = _py_df["Production"].sum()
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric(f"{nass_year} county rows",    f"{len(_raw_df):,}")
-                    c2.metric(f"{nass_year} county total",   f"{_raw_total/1e9:.3f} B bu")
-                    c3.metric(f"{nass_year - 1} county rows",f"{len(_py_df):,}")
-                    c4.metric(f"{nass_year - 1} county total",f"{_py_total/1e9:.3f} B bu")
-                    st.caption(
-                        f"Non-ALL-PRACTICES rows kept (idxmax): {_no_all_n}  |  "
-                        f"crop={nass_crop}  year={nass_year}  cache_ver={_CACHE_VERSION}"
-                    )
 
             # ── Map ───────────────────────────────────────────────────────────
             if sel_st is None:
