@@ -10,7 +10,7 @@ import base64
 from pathlib import Path
 
 st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
-_CACHE_VERSION = "v6"   # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v7"   # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -22,19 +22,62 @@ LOGO_FULL  = HERE / "assets" / "logo-full.png"
 # ── NASS API ───────────────────────────────────────────────────────────────────
 NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
 NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
+NASS_YEARS    = [2025, 2024, 2023, 2022]
+
+# Metrics available in the NASS tab
+NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres", "Yield (bu/ac)"]
+NASS_CHANGE_OPTS = ["Absolute", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
+
+_METRIC_TO_STAT = {
+    "Production (bu)": "production",
+    "Planted Acres":   "planted",
+    "Harvested Acres": "harvested",
+    "Yield (bu/ac)":   "yield",
+}
+
+# Per-crop API params for each stat type
+NASS_CROP_STAT_PARAMS = {
+    "Corn": {
+        "production": {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+        "planted":    {"commodity_desc": "CORN"},
+        "harvested":  {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+        "yield":      {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+    },
+    "Soybeans": {
+        "production": {"commodity_desc": "SOYBEANS"},
+        "planted":    {"commodity_desc": "SOYBEANS"},
+        "harvested":  {"commodity_desc": "SOYBEANS"},
+        "yield":      {"commodity_desc": "SOYBEANS"},
+    },
+    "Wheat": {
+        "production": {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "planted":    {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "harvested":  {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "yield":      {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+    },
+    "Sorghum": {
+        "production": {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+        "planted":    {"commodity_desc": "SORGHUM"},
+        "harvested":  {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+        "yield":      {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+    },
+}
+
+# Base API params per stat type
+NASS_STAT_BASE = {
+    "production": {"statisticcat_desc": "PRODUCTION",     "unit_desc": "BU"},
+    "planted":    {"statisticcat_desc": "AREA PLANTED",    "unit_desc": "ACRES"},
+    "harvested":  {"statisticcat_desc": "AREA HARVESTED",  "unit_desc": "ACRES"},
+    "yield":      {"statisticcat_desc": "YIELD",           "unit_desc": "BU / ACRE"},
+}
+
+# Legacy — kept for backward compat with any cached references
 NASS_CROP_PARAMS = {
     "Corn":     {"commodity_desc": "CORN",    "util_practice_desc": "GRAIN"},
     "Soybeans": {"commodity_desc": "SOYBEANS"},
     "Wheat":    {"commodity_desc": "WHEAT",   "class_desc": "ALL CLASSES"},
     "Sorghum":  {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
 }
-NASS_YEARS = [2025, 2024, 2023, 2022]
-NASS_VIEW_OPTS = [
-    "Production (bu)",
-    "Change vs Prior Year (%)",
-    "Change vs Selected Year (%)",
-    "Change vs 3-Yr Average (%)",
-]
 
 # ── State lookups ─────────────────────────────────────────────────────────────
 # RMA subset (used for county FIPS name-lookup only)
@@ -171,63 +214,68 @@ def load_data():
 
 # ── NASS Data ─────────────────────────────────────────────────────────────────
 @st.cache_data
-def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
-    # Do NOT filter prodn_practice_desc here — some counties only report
-    # IRRIGATED / NON-IRRIGATED without an aggregate row; we dedup below.
+def load_nass_stat(crop: str, year: int, stat_type: str) -> pd.DataFrame:
+    """Generic NASS county-level loader for any stat type.
+    stat_type: 'production' | 'planted' | 'harvested' | 'yield'
+    Returns DataFrame with [State, County, fips, Value].
+    """
     params = {
-        "key":               NASS_API_KEY,
-        "source_desc":       "SURVEY",
-        "sector_desc":       "CROPS",
-        "statisticcat_desc": "PRODUCTION",
-        "unit_desc":         "BU",
-        "agg_level_desc":    "COUNTY",
-        "year":              str(year),
-        "format":            "JSON",
+        "key":            NASS_API_KEY,
+        "source_desc":    "SURVEY",
+        "sector_desc":    "CROPS",
+        "agg_level_desc": "COUNTY",
+        "year":           str(year),
+        "format":         "JSON",
     }
-    params.update(NASS_CROP_PARAMS[crop])
+    params.update(NASS_STAT_BASE[stat_type])
+    params.update(NASS_CROP_STAT_PARAMS[crop][stat_type])
     url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
     except Exception as e:
-        st.warning(f"NASS API error for {crop} {year}: {e}")
-        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
+        st.warning(f"NASS API error for {crop} {year} {stat_type}: {e}")
+        return pd.DataFrame(columns=["State", "County", "fips", "Value"])
 
     records = raw.get("data", [])
     if not records:
-        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
+        return pd.DataFrame(columns=["State", "County", "fips", "Value"])
 
     df = pd.DataFrame(records)
     needed = ["state_alpha", "county_name", "state_fips_code",
               "county_ansi", "prodn_practice_desc", "Value"]
     df = df[[c for c in needed if c in df.columns]].copy()
 
-    # Drop state-level and aggregate rows (by ansi code and by name)
+    # Drop state-level and aggregate rows
     df = df[~df["county_ansi"].isin(["998", "000", "999"])]
     df = df[~df["county_name"].str.strip().str.lower().str.startswith("other")]
 
-    df["Production"] = pd.to_numeric(
+    df["Value"] = pd.to_numeric(
         df["Value"].str.replace(",", "", regex=False).str.strip(),
         errors="coerce",
     ).fillna(0)
-
     df["fips"]   = df["state_fips_code"].str.zfill(2) + df["county_ansi"].str.zfill(3)
     df["State"]  = df["state_alpha"].str.strip()
     df["County"] = df["county_name"].str.strip().str.title()
 
-    # Dedup: prefer the "ALL PRODUCTION PRACTICES" row per county; if absent,
-    # keep the single highest-value row (avoids double-counting irrigated +
-    # non-irrigated where only a breakdown exists).
-    key = ["State", "County", "fips"]
+    # Dedup: prefer ALL PRODUCTION PRACTICES row; fallback to max-value row
+    key      = ["State", "County", "fips"]
     all_prac = "ALL PRODUCTION PRACTICES"
     if "prodn_practice_desc" in df.columns:
         has_all = df[df["prodn_practice_desc"] == all_prac].copy()
         no_all  = df[~df["fips"].isin(has_all["fips"].unique())].copy()
         if not no_all.empty:
-            no_all = no_all.loc[no_all.groupby(key)["Production"].idxmax()]
+            no_all = no_all.loc[no_all.groupby(key)["Value"].idxmax()]
         df = pd.concat([has_all, no_all], ignore_index=True)
 
-    return df[key + ["Production"]].reset_index(drop=True)
+    return df[key + ["Value"]].reset_index(drop=True)
+
+
+@st.cache_data
+def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
+    """Thin wrapper: loads production data with a 'Production' column."""
+    df = load_nass_stat(crop, year, "production")
+    return df.rename(columns={"Value": "Production"})
 
 
 # ── GeoJSON & lookups ─────────────────────────────────────────────────────────
@@ -351,106 +399,118 @@ def format_nass_chg_label(val):
     return f"{val:+.1f}%"
 
 
+def format_nass_acres_label(val):
+    if pd.isna(val) or val < 500:
+        return ""
+    return f"{val / 1_000:,.0f}K"
+
+
+def format_nass_yield_label(val):
+    if pd.isna(val) or val == 0:
+        return ""
+    return f"{val:.0f}"
+
+
 # ── NASS view helpers ─────────────────────────────────────────────────────────
-def _nass_view_cfg(view: str) -> dict:
-    """Return render-config dict for a NASS view label."""
-    if view == "Production (bu)":
+def _nass_view_cfg(metric: str, change_view: str) -> dict:
+    """Return render-config dict given a metric and change_view."""
+    if change_view != "Absolute":
         return {
-            "cscale":     "YlOrBr",
-            "diverging":  False,
-            "clabel":     "Production<br>(bu)",
-            "hover_fmt":  ":,.0f",
-            "hover_sfx":  " bu",
-            "label_unit": "M bu",
-            "label_fn":   format_nass_label,
-            "rank_unit":  "M bu",
-            "rank_div":   1_000_000,
-            "rank_fmt":   ",.2f",
+            "cscale": "RdYlGn", "diverging": True, "clabel": "Change (%)",
+            "hover_fmt": ":+.1f", "hover_sfx": "%", "label_unit": "% chg",
+            "label_fn": format_nass_chg_label,
+            "rank_unit": "%", "rank_div": 1, "rank_fmt": "+.1f",
         }
-    return {
-        "cscale":     "RdYlGn",
-        "diverging":  True,
-        "clabel":     "Change (%)",
-        "hover_fmt":  ":+.1f",
-        "hover_sfx":  "%",
-        "label_unit": "% chg",
-        "label_fn":   format_nass_chg_label,
-        "rank_unit":  "%",
-        "rank_div":   1,
-        "rank_fmt":   "+.1f",
+    _abs_cfgs = {
+        "Production (bu)": {
+            "cscale": "YlOrBr", "diverging": False, "clabel": "Production<br>(bu)",
+            "hover_fmt": ":,.0f", "hover_sfx": " bu", "label_unit": "M bu",
+            "label_fn": format_nass_label,
+            "rank_unit": "M bu", "rank_div": 1_000_000, "rank_fmt": ",.2f",
+        },
+        "Planted Acres": {
+            "cscale": "YlGn", "diverging": False, "clabel": "Planted<br>Acres",
+            "hover_fmt": ":,.0f", "hover_sfx": " ac", "label_unit": "K ac",
+            "label_fn": format_nass_acres_label,
+            "rank_unit": "K ac", "rank_div": 1_000, "rank_fmt": ",.1f",
+        },
+        "Harvested Acres": {
+            "cscale": "BuGn", "diverging": False, "clabel": "Harvested<br>Acres",
+            "hover_fmt": ":,.0f", "hover_sfx": " ac", "label_unit": "K ac",
+            "label_fn": format_nass_acres_label,
+            "rank_unit": "K ac", "rank_div": 1_000, "rank_fmt": ",.1f",
+        },
+        "Yield (bu/ac)": {
+            "cscale": "RdYlGn", "diverging": False, "clabel": "Yield<br>(bu/ac)",
+            "hover_fmt": ":.1f", "hover_sfx": " bu/ac", "label_unit": "bu/ac",
+            "label_fn": format_nass_yield_label,
+            "rank_unit": "bu/ac", "rank_div": 1, "rank_fmt": ".1f",
+        },
     }
+    return _abs_cfgs[metric]
 
 
-def get_nass_view_data(crop: str, year: int, view: str, comp_year=None):
+def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp_year=None):
     """
-    Load and compute the view metric.
-    Returns (county_df, state_df) each with a 'Value' column.
-      county_df: [State, County, Value]
-      state_df:  [State, Value]
-    Production view  → Value = production in bu (state-level sum).
-    Change views     → Value = % change vs the comparison period,
-                       computed at county AND state level from raw production
-                       (not averaged across county percentages).
+    Load and compute the view metric for any metric + change_view combination.
+    Returns (county_df [State, County, Value], state_df [State, Value]).
+    Absolute view  → Value = raw stat (bu / acres / bu per ac).
+    Change views   → Value = % change vs comparison period.
     """
-    df_cur = load_nass_county(crop, year)
+    stat_type = _METRIC_TO_STAT[metric]
+    df_cur    = load_nass_stat(crop, year, stat_type)
 
-    if view == "Production (bu)" or df_cur.empty:
-        cdf = (df_cur.groupby(["State", "County"])["Production"]
-               .sum().reset_index().rename(columns={"Production": "Value"}))
-        sdf = (df_cur.groupby("State")["Production"]
-               .sum().reset_index().rename(columns={"Production": "Value"}))
-        return cdf, sdf
+    def _agg_c(df):
+        if metric == "Yield (bu/ac)":
+            return df.groupby(["State", "County"])["Value"].mean().reset_index()
+        return df.groupby(["State", "County"])["Value"].sum().reset_index()
+
+    def _agg_s(df):
+        if metric == "Yield (bu/ac)":
+            return df.groupby("State")["Value"].mean().reset_index()
+        return df.groupby("State")["Value"].sum().reset_index()
+
+    if change_view == "Absolute" or df_cur.empty:
+        return _agg_c(df_cur), _agg_s(df_cur)
 
     def _pct(cur_s, cmp_s):
         return (cur_s - cmp_s) / cmp_s.replace(0, np.nan) * 100
 
-    if view == "Change vs Prior Year (%)":
-        df_cmp = load_nass_county(crop, year - 1)
-    elif view == "Change vs Selected Year (%)":
-        df_cmp = load_nass_county(crop, comp_year) if comp_year else df_cur
-    else:  # Change vs 3-Yr Average (%)
+    if change_view == "vs Prior Year":
+        df_cmp = load_nass_stat(crop, year - 1, stat_type)
+    elif change_view == "vs Selected Year":
+        df_cmp = load_nass_stat(crop, comp_year, stat_type) if comp_year else df_cur
+    else:  # vs 3-Yr Avg
         prior_years = [y for y in [year - 1, year - 2, year - 3] if y >= 2022]
-        frames = [load_nass_county(crop, y) for y in prior_years]
+        frames = [load_nass_stat(crop, y, stat_type) for y in prior_years]
         frames = [f for f in frames if not f.empty]
         if not frames:
-            empty_c = pd.DataFrame(columns=["State", "County", "Value"])
-            empty_s = pd.DataFrame(columns=["State", "Value"])
-            return empty_c, empty_s
-        # County-level average production across prior years
-        avg_c = (pd.concat([d.groupby(["State", "County"])["Production"].sum().reset_index()
-                             for d in frames])
-                 .groupby(["State", "County"])["Production"].mean()
-                 .reset_index().rename(columns={"Production": "Base"}))
-        cur_c = df_cur.groupby(["State", "County"])["Production"].sum().reset_index()
+            return pd.DataFrame(columns=["State", "County", "Value"]), pd.DataFrame(columns=["State", "Value"])
+        avg_c = (pd.concat([_agg_c(d) for d in frames])
+                 .groupby(["State", "County"])["Value"].mean()
+                 .reset_index().rename(columns={"Value": "Base"}))
+        cur_c = _agg_c(df_cur)
         mc = cur_c.merge(avg_c, on=["State", "County"], how="inner")
-        mc["Value"] = _pct(mc["Production"], mc["Base"])
-        cdf = mc[["State", "County", "Value"]].dropna(subset=["Value"])
-        # State-level average production across prior years
-        avg_s = (pd.concat([d.groupby("State")["Production"].sum().reset_index()
-                             for d in frames])
-                 .groupby("State")["Production"].mean()
-                 .reset_index().rename(columns={"Production": "Base"}))
-        cur_s = df_cur.groupby("State")["Production"].sum().reset_index()
+        mc["Value"] = _pct(mc["Value"], mc["Base"])
+        avg_s = (pd.concat([_agg_s(d) for d in frames])
+                 .groupby("State")["Value"].mean()
+                 .reset_index().rename(columns={"Value": "Base"}))
+        cur_s = _agg_s(df_cur)
         ms = cur_s.merge(avg_s, on="State", how="inner")
-        ms["Value"] = _pct(ms["Production"], ms["Base"])
-        sdf = ms[["State", "Value"]].dropna(subset=["Value"])
-        return cdf, sdf
+        ms["Value"] = _pct(ms["Value"], ms["Base"])
+        return mc[["State", "County", "Value"]].dropna(subset=["Value"]), ms[["State", "Value"]].dropna(subset=["Value"])
 
-    # Shared path for Prior Year and Selected Year
-    cur_c = df_cur.groupby(["State", "County"])["Production"].sum().reset_index()
-    cmp_c = (df_cmp.groupby(["State", "County"])["Production"].sum()
-             .reset_index().rename(columns={"Production": "Base"}))
-    mc = cur_c.merge(cmp_c, on=["State", "County"], how="inner")
-    mc["Value"] = _pct(mc["Production"], mc["Base"])
-    cdf = mc[["State", "County", "Value"]].dropna(subset=["Value"])
+    # Prior Year / Selected Year shared path
+    cur_c = _agg_c(df_cur)
+    cmp_c = _agg_c(df_cmp).rename(columns={"Value": "Base"})
+    mc    = cur_c.merge(cmp_c, on=["State", "County"], how="inner")
+    mc["Value"] = _pct(mc["Value"], mc["Base"])
 
-    cur_s = df_cur.groupby("State")["Production"].sum().reset_index()
-    cmp_s = (df_cmp.groupby("State")["Production"].sum()
-             .reset_index().rename(columns={"Production": "Base"}))
-    ms = cur_s.merge(cmp_s, on="State", how="inner")
-    ms["Value"] = _pct(ms["Production"], ms["Base"])
-    sdf = ms[["State", "Value"]].dropna(subset=["Value"])
-    return cdf, sdf
+    cur_s = _agg_s(df_cur)
+    cmp_s = _agg_s(df_cmp).rename(columns={"Value": "Base"})
+    ms    = cur_s.merge(cmp_s, on="State", how="inner")
+    ms["Value"] = _pct(ms["Value"], ms["Base"])
+    return mc[["State", "County", "Value"]].dropna(subset=["Value"]), ms[["State", "Value"]].dropna(subset=["Value"])
 
 
 # ── Aggregation ───────────────────────────────────────────────────────────────
@@ -679,14 +739,15 @@ def build_ranking_chart(agg, metric, state):
 
 
 # ── NASS figure builders ──────────────────────────────────────────────────────
-def build_nass_state_fig(state_vdf, crop, year, view, logo_50yr):
+def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
     """state_vdf has columns [State, Value] — pre-computed by get_nass_view_data."""
-    cfg = _nass_view_cfg(view)
-    agg = state_vdf.copy()
+    cfg        = _nass_view_cfg(metric, change_view)
+    view_label = metric if change_view == "Absolute" else f"{change_view} — {metric}"
+    agg        = state_vdf.copy()
     agg["StateName"] = agg["State"].map(ABBR_TO_NAME)
 
     title_text = (
-        f"NASS {year} {crop} — {view}"
+        f"NASS {year} {crop} — {view_label}"
         f"<br><sup>Map labels in {cfg['label_unit']}</sup>"
     )
 
@@ -728,10 +789,11 @@ def build_nass_state_fig(state_vdf, crop, year, view, logo_50yr):
     return fig
 
 
-def build_nass_county_fig(county_vdf, geo, state, crop, year, view, logo_50yr, centroids, fips_lk):
+def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_view, logo_50yr, centroids, fips_lk):
     """county_vdf has columns [State, County, Value] — pre-computed by get_nass_view_data."""
-    cfg = _nass_view_cfg(view)
-    state_df = county_vdf[county_vdf["State"] == state].copy()
+    cfg        = _nass_view_cfg(metric, change_view)
+    view_label = metric if change_view == "Absolute" else f"{change_view} — {metric}"
+    state_df   = county_vdf[county_vdf["State"] == state].copy()
     if state_df.empty:
         return None
 
@@ -763,7 +825,7 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, view, logo_50yr, c
 
     state_name = ABBR_TO_NAME.get(state, state)
     title_text = (
-        f"NASS {year} {crop} — {view} | {state_name} Counties"
+        f"NASS {year} {crop} — {view_label} | {state_name} Counties"
         f"<br><sup>Map labels in {cfg['label_unit']}</sup>"
     )
 
@@ -795,9 +857,10 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, view, logo_50yr, c
     return fig
 
 
-def build_nass_ranking_chart(ranked_df, state, crop, year, view):
+def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
     """ranked_df: DataFrame with [County, Value] pre-filtered to a single state."""
-    cfg        = _nass_view_cfg(view)
+    cfg        = _nass_view_cfg(metric, change_view)
+    view_label = metric if change_view == "Absolute" else f"{change_view} — {metric}"
     state_name = ABBR_TO_NAME.get(state, state)
     ranked     = ranked_df.dropna(subset=["Value"]).sort_values("Value", ascending=True)
     if ranked.empty:
@@ -828,7 +891,7 @@ def build_nass_ranking_chart(ranked_df, state, crop, year, view):
         paper_bgcolor=DARK, plot_bgcolor=SURFACE,
         font=dict(color=TEXT, family="Arial"),
         title=dict(
-            text=f"{state_name} County Rankings — {crop} {view} (NASS {year})",
+            text=f"{state_name} County Rankings — {crop} {view_label} (NASS {year})",
             font=dict(size=14, color=ACCENT),
         ),
         height=max(380, len(ranked) * 22 + 80),
@@ -848,15 +911,16 @@ def build_nass_ranking_chart(ranked_df, state, crop, year, view):
 # excluded (underscore prefix) so large objects aren't hashed into the key.
 
 @st.cache_data(show_spinner=False)
-def cached_nass_county_fig(state: str, crop: str, year: int, view: str,
+def cached_nass_county_fig(state: str, crop: str, year: int,
+                            metric: str, change_view: str,
                             comp_year: int, cache_ver: str,
                             _geo, _centroids, _logo_50yr, _fips_lk):
-    # comp_year == 0 means "not applicable"; convert back to None for the helper
     county_vdf, _ = get_nass_view_data(
-        crop, year, view, comp_year if comp_year > 0 else None
+        crop, year, metric, change_view,
+        comp_year if comp_year > 0 else None,
     )
     return build_nass_county_fig(
-        county_vdf, _geo, state, crop, year, view, _logo_50yr, _centroids, _fips_lk
+        county_vdf, _geo, state, crop, year, metric, change_view, _logo_50yr, _centroids, _fips_lk
     )
 
 
@@ -976,10 +1040,10 @@ def main():
         if "nass_sel_state" not in st.session_state:
             st.session_state.nass_sel_state = None
 
-        # Row 1 — Crop, Year, State drill-down (nc3 filled after data loads), Refresh
+        # Row 1 — Crop, Year, State drill-down, Refresh
         nc1, nc2, nc3, nc4 = st.columns([1, 0.75, 1.8, 0.55])
         with nc1:
-            nass_crop = st.selectbox("Crop", list(NASS_CROP_PARAMS.keys()), key="nass_crop")
+            nass_crop = st.selectbox("Crop", list(NASS_CROP_STAT_PARAMS.keys()), key="nass_crop")
         with nc2:
             nass_year = st.selectbox("Year", NASS_YEARS, index=0, key="nass_year")
         with nc4:
@@ -988,22 +1052,28 @@ def main():
                 st.cache_data.clear()
                 st.rerun()
 
-        # Row 2 — View toggle buttons
-        _btn_labels = ["Production", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
-        _btn_to_view = {
-            "Production":       "Production (bu)",
-            "vs Prior Year":    "Change vs Prior Year (%)",
-            "vs Selected Year": "Change vs Selected Year (%)",
-            "vs 3-Yr Avg":      "Change vs 3-Yr Average (%)",
-        }
-        nass_view_btn = st.radio(
-            "View", _btn_labels, horizontal=True,
-            key="nass_view", label_visibility="collapsed",
+        # Row 2 — Metric selector
+        st.markdown(
+            f"<p style='color:{MUTED};font-size:0.78rem;margin:4px 0 2px 0;'>Metric</p>",
+            unsafe_allow_html=True,
         )
-        nass_view = _btn_to_view[nass_view_btn]
+        nass_metric = st.radio(
+            "Metric", NASS_METRICS, horizontal=True,
+            key="nass_metric", label_visibility="collapsed",
+        )
 
-        # Row 3 (conditional) — Compare-year picker, only shown for "vs Selected Year"
-        if nass_view == "Change vs Selected Year (%)":
+        # Row 3 — Change view selector
+        st.markdown(
+            f"<p style='color:{MUTED};font-size:0.78rem;margin:4px 0 2px 0;'>View</p>",
+            unsafe_allow_html=True,
+        )
+        nass_change = st.radio(
+            "Change View", NASS_CHANGE_OPTS, horizontal=True,
+            key="nass_change", label_visibility="collapsed",
+        )
+
+        # Row 4 (conditional) — Compare-year picker
+        if nass_change == "vs Selected Year":
             cy_col, _ = st.columns([0.55, 2.6])
             with cy_col:
                 avail_comp   = [y for y in NASS_YEARS if y != nass_year]
@@ -1011,19 +1081,21 @@ def main():
         else:
             nass_comp_yr = None
 
-        with st.spinner(f"Loading NASS {nass_year} {nass_crop} data..."):
-            nass_df = load_nass_county(nass_crop, nass_year)
-            # Pre-warm cache for comparison years
-            if nass_view == "Change vs Prior Year (%)":
-                load_nass_county(nass_crop, nass_year - 1)
-            elif nass_view == "Change vs Selected Year (%)" and nass_comp_yr:
-                load_nass_county(nass_crop, nass_comp_yr)
-            elif nass_view == "Change vs 3-Yr Average (%)":
+        stat_type = _METRIC_TO_STAT[nass_metric]
+
+        with st.spinner(f"Loading NASS {nass_year} {nass_crop} {nass_metric}..."):
+            nass_df = load_nass_county(nass_crop, nass_year)   # production — for state availability
+            # Pre-warm comparison years for selected metric
+            if nass_change == "vs Prior Year":
+                load_nass_stat(nass_crop, nass_year - 1, stat_type)
+            elif nass_change == "vs Selected Year" and nass_comp_yr:
+                load_nass_stat(nass_crop, nass_comp_yr, stat_type)
+            elif nass_change == "vs 3-Yr Avg":
                 for _y in [nass_year - 1, nass_year - 2, nass_year - 3]:
                     if _y >= 2022:
-                        load_nass_county(nass_crop, _y)
+                        load_nass_stat(nass_crop, _y, stat_type)
             county_vdf, state_vdf = get_nass_view_data(
-                nass_crop, nass_year, nass_view, nass_comp_yr
+                nass_crop, nass_year, nass_metric, nass_change, nass_comp_yr
             )
 
         if nass_df.empty:
@@ -1052,23 +1124,32 @@ def main():
                 )
 
             # ── Summary metrics ───────────────────────────────────────────────
-            sel_st     = st.session_state.nass_sel_state
-            scope_prod = (nass_df if sel_st is None
-                          else nass_df[nass_df["State"] == sel_st])
-            scope_v    = (county_vdf if sel_st is None
-                          else county_vdf[county_vdf["State"] == sel_st])
+            sel_st    = st.session_state.nass_sel_state
+            # Load absolute stat values for the KPI card (cache is warm)
+            stat_df   = load_nass_stat(nass_crop, nass_year, stat_type)
+            scope_stat = stat_df if sel_st is None else stat_df[stat_df["State"] == sel_st]
+            scope_prod = nass_df if sel_st is None else nass_df[nass_df["State"] == sel_st]
+            scope_v   = county_vdf if sel_st is None else county_vdf[county_vdf["State"] == sel_st]
 
-            if nass_view == "Production (bu)":
+            def _metric_kpi_str(df_stat):
+                if nass_metric == "Yield (bu/ac)":
+                    v = df_stat["Value"].mean()
+                    return f"{v:.1f} bu/ac" if not pd.isna(v) else "—"
+                if nass_metric in ("Planted Acres", "Harvested Acres"):
+                    v = df_stat["Value"].sum()
+                    return f"{v/1e6:.2f}M ac"
+                v = df_stat["Value"].sum()
+                return f"{v:,.0f} bu"
+
+            if nass_change == "Absolute":
                 nm1, nm2, nm3 = st.columns(3)
-                nm1.metric(f"{nass_year} Production",
-                           f"{scope_prod['Production'].sum():,.0f} bu")
+                nm1.metric(f"{nass_year} {nass_metric}", _metric_kpi_str(scope_stat))
                 nm2.metric("Counties Reporting",
-                           f"{scope_prod[['State','County']].drop_duplicates().shape[0]:,}")
-                nm3.metric("States", f"{scope_prod['State'].nunique():,}")
+                           f"{scope_stat[['State','County']].drop_duplicates().shape[0]:,}")
+                nm3.metric("States", f"{scope_stat['State'].nunique():,}")
             else:
                 nm1, nm2, nm3, nm4 = st.columns(4)
-                nm1.metric(f"{nass_year} Production",
-                           f"{scope_prod['Production'].sum():,.0f} bu")
+                nm1.metric(f"{nass_year} {nass_metric}", _metric_kpi_str(scope_stat))
                 valid_v  = scope_v["Value"].dropna()
                 avg_chg  = valid_v.mean() if not valid_v.empty else float("nan")
                 improved = int((valid_v > 0).sum())
@@ -1087,7 +1168,7 @@ def main():
                     )
                 else:
                     nass_fig = build_nass_state_fig(
-                        state_vdf, nass_crop, nass_year, nass_view, logo_50yr
+                        state_vdf, nass_crop, nass_year, nass_metric, nass_change, logo_50yr
                     )
                     nass_fig.update_layout(dragmode=False)
                     st.plotly_chart(nass_fig, use_container_width=True,
@@ -1114,7 +1195,8 @@ def main():
                         f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
                     ):
                         nass_county_fig = cached_nass_county_fig(
-                            nass_state, nass_crop, nass_year, nass_view,
+                            nass_state, nass_crop, nass_year,
+                            nass_metric, nass_change,
                             nass_comp_yr if nass_comp_yr else 0,
                             _CACHE_VERSION, geo, centroids, logo_50yr, fips_lk
                         )
@@ -1131,11 +1213,11 @@ def main():
                 st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                             unsafe_allow_html=True)
 
-                # Ranking chart — switches between production and change view
                 state_county_v = county_vdf[county_vdf["State"] == nass_state].copy()
                 if not state_county_v.empty:
                     ranking_nass = build_nass_ranking_chart(
-                        state_county_v, nass_state, nass_crop, nass_year, nass_view
+                        state_county_v, nass_state, nass_crop, nass_year,
+                        nass_metric, nass_change,
                     )
                     st.plotly_chart(ranking_nass, use_container_width=True, key="nass_ranking")
 
@@ -1143,23 +1225,43 @@ def main():
                     f"County Data Table — {ABBR_TO_NAME.get(nass_state, nass_state)}",
                     expanded=False,
                 ):
-                    tbl = state_df[["County", "Production"]].sort_values(
-                        "Production", ascending=False
+                    # Build display table from state_county_v (selected metric/view values)
+                    tbl = state_county_v[["County", "Value"]].dropna(subset=["Value"]).sort_values(
+                        "Value", ascending=False
                     ).copy()
-                    tbl["Production (bu)"] = tbl["Production"].apply(
-                        lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
-                    )
-                    if nass_view != "Production (bu)" and not state_county_v.empty:
-                        chg = state_county_v[["County", "Value"]].copy()
-                        chg.columns = ["County", "Change (%)"]
-                        chg["Change (%)"] = chg["Change (%)"].apply(
+
+                    if nass_change != "Absolute":
+                        col_label = f"% Change ({nass_metric})"
+                        tbl[col_label] = tbl["Value"].apply(
                             lambda v: f"{v:+.1f}%" if pd.notna(v) else "—"
                         )
-                        tbl = tbl.merge(chg, on="County", how="left")
-                        show_cols = ["County", "Production (bu)", "Change (%)"]
+                    elif nass_metric == "Yield (bu/ac)":
+                        col_label = "Yield (bu/ac)"
+                        tbl[col_label] = tbl["Value"].apply(
+                            lambda v: f"{v:.1f}" if pd.notna(v) else "—"
+                        )
+                    elif nass_metric in ("Planted Acres", "Harvested Acres"):
+                        col_label = nass_metric
+                        tbl[col_label] = tbl["Value"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                        )
                     else:
-                        show_cols = ["County", "Production (bu)"]
-                    st.dataframe(tbl[show_cols], use_container_width=True, hide_index=True)
+                        col_label = "Production (bu)"
+                        tbl[col_label] = tbl["Value"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                        )
+
+                    show_tbl = tbl[["County", col_label]].copy()
+                    # Add production as context when showing a non-production metric
+                    if nass_metric != "Production (bu)":
+                        prod_ctx = state_df[["County", "Production"]].copy()
+                        prod_ctx["Production (bu)"] = prod_ctx["Production"].apply(
+                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                        )
+                        show_tbl = show_tbl.merge(
+                            prod_ctx[["County", "Production (bu)"]], on="County", how="left"
+                        )
+                    st.dataframe(show_tbl, use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # RMA TAB
