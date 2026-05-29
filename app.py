@@ -10,7 +10,7 @@ import base64
 from pathlib import Path
 
 st.set_page_config(page_title="USDA County Production Dashboard", layout="wide")
-_CACHE_VERSION = "v7"   # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v8"   # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -222,7 +222,8 @@ def load_data():
 
 # ── NASS Data ─────────────────────────────────────────────────────────────────
 @st.cache_data
-def load_nass_stat(crop: str, year: int, stat_type: str) -> pd.DataFrame:
+def load_nass_stat(crop: str, year: int, stat_type: str,
+                   cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
     """Generic NASS county-level loader for any stat type.
     stat_type: 'production' | 'planted' | 'harvested' | 'yield' | 'prevent_plant'
     Returns DataFrame with [State, County, fips, Value].
@@ -288,7 +289,8 @@ def load_nass_stat(crop: str, year: int, stat_type: str) -> pd.DataFrame:
 
 
 @st.cache_data
-def load_nass_county(crop: str, year: int = 2025) -> pd.DataFrame:
+def load_nass_county(crop: str, year: int = 2025,
+                     cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
     """Load county-level production data.  Kept as a standalone function
     (not delegating to load_nass_stat) to avoid Streamlit cache-within-cache
     issues that can cause stale or incorrect return values.
@@ -529,8 +531,8 @@ def _load_for_metric(crop: str, year: int, stat_type: str) -> pd.DataFrame:
     to guarantee correct figures; all other stats go through load_nass_stat.
     """
     if stat_type == "production":
-        return load_nass_county(crop, year).rename(columns={"Production": "Value"})
-    return load_nass_stat(crop, year, stat_type)
+        return load_nass_county(crop, year, _CACHE_VERSION).rename(columns={"Production": "Value"})
+    return load_nass_stat(crop, year, stat_type, _CACHE_VERSION)
 
 
 def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp_year=None):
@@ -980,7 +982,7 @@ def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
         height=max(380, len(ranked) * 22 + 80),
         margin=dict(l=10, r=90, t=50, b=20), bargap=0.18,
         xaxis=dict(
-            title=f"{view} ({cfg['rank_unit']})", gridcolor=BORDER,
+            title=f"{view_label} ({cfg['rank_unit']})", gridcolor=BORDER,
             tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
             zeroline=True, zerolinecolor=MUTED,
         ),
@@ -1167,7 +1169,7 @@ def main():
         stat_type = _METRIC_TO_STAT[nass_metric]
 
         with st.spinner(f"Loading NASS {nass_year} {nass_crop} {nass_metric}..."):
-            nass_df = load_nass_county(nass_crop, nass_year)   # production — for state availability
+            nass_df = load_nass_county(nass_crop, nass_year, _CACHE_VERSION)   # production — for state availability
             # Pre-warm comparison years for the selected metric
             if nass_change == "vs Prior Year":
                 _load_for_metric(nass_crop, nass_year - 1, stat_type)
