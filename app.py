@@ -25,50 +25,58 @@ NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
 NASS_YEARS    = [2025, 2024, 2023, 2022]
 
 # Metrics available in the NASS tab
-NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres", "Yield (bu/ac)"]
+NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres",
+                    "Yield (bu/ac)", "Prevent Plant Acres"]
 NASS_CHANGE_OPTS = ["Absolute", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
 
 _METRIC_TO_STAT = {
-    "Production (bu)": "production",
-    "Planted Acres":   "planted",
-    "Harvested Acres": "harvested",
-    "Yield (bu/ac)":   "yield",
+    "Production (bu)":    "production",
+    "Planted Acres":      "planted",
+    "Harvested Acres":    "harvested",
+    "Yield (bu/ac)":      "yield",
+    "Prevent Plant Acres": "prevent_plant",
 }
 
 # Per-crop API params for each stat type
 NASS_CROP_STAT_PARAMS = {
     "Corn": {
-        "production": {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
-        "planted":    {"commodity_desc": "CORN"},
-        "harvested":  {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
-        "yield":      {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+        "production":    {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+        "planted":       {"commodity_desc": "CORN"},
+        "harvested":     {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+        "yield":         {"commodity_desc": "CORN", "util_practice_desc": "GRAIN"},
+        "prevent_plant": {"commodity_desc": "CORN"},
     },
     "Soybeans": {
-        "production": {"commodity_desc": "SOYBEANS"},
-        "planted":    {"commodity_desc": "SOYBEANS"},
-        "harvested":  {"commodity_desc": "SOYBEANS"},
-        "yield":      {"commodity_desc": "SOYBEANS"},
+        "production":    {"commodity_desc": "SOYBEANS"},
+        "planted":       {"commodity_desc": "SOYBEANS"},
+        "harvested":     {"commodity_desc": "SOYBEANS"},
+        "yield":         {"commodity_desc": "SOYBEANS"},
+        "prevent_plant": {"commodity_desc": "SOYBEANS"},
     },
     "Wheat": {
-        "production": {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
-        "planted":    {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
-        "harvested":  {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
-        "yield":      {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "production":    {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "planted":       {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "harvested":     {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "yield":         {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
+        "prevent_plant": {"commodity_desc": "WHEAT", "class_desc": "ALL CLASSES"},
     },
     "Sorghum": {
-        "production": {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
-        "planted":    {"commodity_desc": "SORGHUM"},
-        "harvested":  {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
-        "yield":      {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+        "production":    {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+        "planted":       {"commodity_desc": "SORGHUM"},
+        "harvested":     {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+        "yield":         {"commodity_desc": "SORGHUM", "util_practice_desc": "GRAIN"},
+        "prevent_plant": {"commodity_desc": "SORGHUM"},
     },
 }
 
 # Base API params per stat type
+# prevent_plant uses AREA PLANTED — rows are filtered to "PREVENTED" in load_nass_stat
 NASS_STAT_BASE = {
-    "production": {"statisticcat_desc": "PRODUCTION",     "unit_desc": "BU"},
-    "planted":    {"statisticcat_desc": "AREA PLANTED",    "unit_desc": "ACRES"},
-    "harvested":  {"statisticcat_desc": "AREA HARVESTED",  "unit_desc": "ACRES"},
-    "yield":      {"statisticcat_desc": "YIELD",           "unit_desc": "BU / ACRE"},
+    "production":    {"statisticcat_desc": "PRODUCTION",     "unit_desc": "BU"},
+    "planted":       {"statisticcat_desc": "AREA PLANTED",    "unit_desc": "ACRES"},
+    "harvested":     {"statisticcat_desc": "AREA HARVESTED",  "unit_desc": "ACRES"},
+    "yield":         {"statisticcat_desc": "YIELD",           "unit_desc": "BU / ACRE"},
+    "prevent_plant": {"statisticcat_desc": "AREA PLANTED",    "unit_desc": "ACRES"},
 }
 
 # Legacy — kept for backward compat with any cached references
@@ -216,7 +224,7 @@ def load_data():
 @st.cache_data
 def load_nass_stat(crop: str, year: int, stat_type: str) -> pd.DataFrame:
     """Generic NASS county-level loader for any stat type.
-    stat_type: 'production' | 'planted' | 'harvested' | 'yield'
+    stat_type: 'production' | 'planted' | 'harvested' | 'yield' | 'prevent_plant'
     Returns DataFrame with [State, County, fips, Value].
     """
     params = {
@@ -243,8 +251,16 @@ def load_nass_stat(crop: str, year: int, stat_type: str) -> pd.DataFrame:
 
     df = pd.DataFrame(records)
     needed = ["state_alpha", "county_name", "state_fips_code",
-              "county_ansi", "prodn_practice_desc", "Value"]
+              "county_ansi", "prodn_practice_desc", "short_desc", "Value"]
     df = df[[c for c in needed if c in df.columns]].copy()
+
+    # For prevent_plant: keep only rows whose short_desc contains "PREVENT"
+    # (AREA PLANTED queries return both regular planted and prevented-planted rows)
+    if stat_type == "prevent_plant":
+        if "short_desc" in df.columns:
+            df = df[df["short_desc"].str.upper().str.contains("PREVENT", na=False)]
+        if df.empty:
+            return pd.DataFrame(columns=["State", "County", "fips", "Value"])
 
     # Drop state-level and aggregate rows
     df = df[~df["county_ansi"].isin(["998", "000", "999"])]
@@ -445,6 +461,12 @@ def _nass_view_cfg(metric: str, change_view: str) -> dict:
             "hover_fmt": ":.1f", "hover_sfx": " bu/ac", "label_unit": "bu/ac",
             "label_fn": format_nass_yield_label,
             "rank_unit": "bu/ac", "rank_div": 1, "rank_fmt": ".1f",
+        },
+        "Prevent Plant Acres": {
+            "cscale": "OrRd", "diverging": False, "clabel": "Prevent<br>Plant Acres",
+            "hover_fmt": ":,.0f", "hover_sfx": " ac", "label_unit": "K ac",
+            "label_fn": format_nass_acres_label,
+            "rank_unit": "K ac", "rank_div": 1_000, "rank_fmt": ",.1f",
         },
     }
     return _abs_cfgs[metric]
@@ -1135,7 +1157,7 @@ def main():
                 if nass_metric == "Yield (bu/ac)":
                     v = df_stat["Value"].mean()
                     return f"{v:.1f} bu/ac" if not pd.isna(v) else "—"
-                if nass_metric in ("Planted Acres", "Harvested Acres"):
+                if nass_metric in ("Planted Acres", "Harvested Acres", "Prevent Plant Acres"):
                     v = df_stat["Value"].sum()
                     return f"{v/1e6:.2f}M ac"
                 v = df_stat["Value"].sum()
@@ -1240,7 +1262,7 @@ def main():
                         tbl[col_label] = tbl["Value"].apply(
                             lambda v: f"{v:.1f}" if pd.notna(v) else "—"
                         )
-                    elif nass_metric in ("Planted Acres", "Harvested Acres"):
+                    elif nass_metric in ("Planted Acres", "Harvested Acres", "Prevent Plant Acres"):
                         col_label = nass_metric
                         tbl[col_label] = tbl["Value"].apply(
                             lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
