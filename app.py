@@ -14,7 +14,7 @@ from shapely.geometry import shape
 
 _HERE = Path(__file__).parent
 st.set_page_config(
-    page_title="USDA County Production Dashboard",
+    page_title="USDA County & ASD Production Dashboard",
     page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
     layout="wide",
 )
