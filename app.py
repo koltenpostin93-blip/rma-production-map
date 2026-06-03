@@ -9,6 +9,8 @@ import numpy as np
 import base64
 from pathlib import Path
 from PIL import Image
+import geopandas as gpd
+from shapely.geometry import shape
 
 _HERE = Path(__file__).parent
 st.set_page_config(
@@ -402,7 +404,7 @@ def load_nass_county(crop: str, year: int = 2025,
 
     df = pd.DataFrame(records)
     needed = ["state_alpha", "county_name", "state_fips_code",
-              "county_ansi", "prodn_practice_desc", "Value"]
+              "county_ansi", "prodn_practice_desc", "asd_desc", "asd_code", "Value"]
     df = df[[c for c in needed if c in df.columns]].copy()
 
     df = df[~df["county_ansi"].isin(["998", "000", "999"])]
@@ -425,7 +427,235 @@ def load_nass_county(crop: str, year: int = 2025,
             no_all = no_all.loc[no_all.groupby(key)["Production"].idxmax()]
         df = pd.concat([has_all, no_all], ignore_index=True)
 
-    return df[key + ["Production"]].reset_index(drop=True)
+    # Include district fields when present in the API response
+    extra = [c for c in ["asd_desc", "asd_code"] if c in df.columns]
+    return df[key + ["Production"] + extra].reset_index(drop=True)
+
+
+# ── ASD district boundary helpers ────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_boundary_fips_map(crop: str, state_fips: str,
+                           cache_ver: str, _geo: dict) -> dict:
+    """Walk back from 2023 to build a complete fips→(District, DistrictCode) map.
+    Uses historical years so the district boundaries are full regardless of
+    how many counties have reported in the currently-selected year.
+    Returns { fips_5: (district_name, district_code) }
+    """
+    all_geo_fips = {
+        f["properties"]["STATE"] + f["properties"]["COUNTY"]
+        for f in _geo["features"]
+        if f["properties"]["STATE"] == state_fips
+    }
+    inv_fips = {v: k for k, v in STATE_FIPS_ALL.items()}
+    state_alpha = inv_fips.get(state_fips, "")
+
+    fips_map: dict = {}
+    for yr in range(2023, 2016, -1):
+        if len(fips_map) >= len(all_geo_fips):
+            break
+        df = load_nass_county(crop, yr, cache_ver)
+        if df.empty or "State" not in df.columns:
+            continue
+        df_s = df[df["State"] == state_alpha]
+        if df_s.empty or "asd_desc" not in df_s.columns:
+            continue
+        for _, row in df_s.iterrows():
+            fips = row.get("fips", "")
+            dist = str(row.get("asd_desc", "")).strip().title()
+            code = str(row.get("asd_code", "")).strip()
+            if fips and dist and dist.lower() not in ("", "nan") and fips not in fips_map:
+                fips_map[fips] = (dist, code)
+    return fips_map
+
+
+@st.cache_data(show_spinner=False)
+def build_nass_district_gdf(state_fips: str, cache_ver: str,
+                            _fips_map: dict, _geo: dict) -> gpd.GeoDataFrame:
+    """Dissolve county polygons → district polygons using the static fips_map."""
+    rows, geoms = [], []
+    for feat in _geo["features"]:
+        if feat["properties"]["STATE"] != state_fips:
+            continue
+        fips  = feat["properties"]["STATE"] + feat["properties"]["COUNTY"]
+        entry = _fips_map.get(fips)
+        if entry is None:
+            continue
+        dist_name, dist_code = entry
+        try:
+            geoms.append(shape(feat["geometry"]))
+            rows.append({"District": dist_name, "DistrictCode": dist_code})
+        except Exception:
+            continue
+
+    if not rows:
+        return gpd.GeoDataFrame()
+
+    gdf = gpd.GeoDataFrame(rows, geometry=geoms, crs="EPSG:4326")
+    dissolved = (
+        gdf.dissolve(by=["District", "DistrictCode"])
+        .reset_index()[["District", "DistrictCode", "geometry"]]
+    )
+    dissolved["centroid_lon"] = dissolved.geometry.centroid.x
+    dissolved["centroid_lat"] = dissolved.geometry.centroid.y
+    return dissolved.sort_values("DistrictCode").reset_index(drop=True)
+
+
+def get_nass_district_view_data(crop: str, year: int, metric: str,
+                                 change_view: str, fips_map: dict,
+                                 state: str, comp_year=None) -> pd.DataFrame:
+    """
+    Returns [District, Value] aggregated from county-level NASS data,
+    computing proper district-level % change for non-absolute views.
+    """
+    stat_type = _METRIC_TO_STAT[metric]
+
+    def _load_state(yr):
+        df = _load_for_metric(crop, yr, stat_type)
+        if df.empty or "State" not in df.columns:
+            return pd.DataFrame(columns=["fips", "Value"])
+        df_s = df[df["State"] == state].copy()
+        df_s["District"] = df_s["fips"].map(lambda f: fips_map.get(f, (None, None))[0])
+        return df_s.dropna(subset=["District"])
+
+    def _agg(df):
+        if metric == "Yield (bu/ac)":
+            return df.groupby("District")["Value"].mean()
+        return df.groupby("District")["Value"].sum()
+
+    cur = _agg(_load_state(year))
+
+    if change_view == "Current Year" or cur.empty:
+        return cur.reset_index()
+
+    def _pct(cur_s, base_s):
+        return ((cur_s - base_s) / base_s.replace(0, np.nan) * 100).dropna()
+
+    if change_view == "vs Prior Year":
+        base = _agg(_load_state(year - 1))
+    elif change_view == "vs Selected Year" and comp_year:
+        base = _agg(_load_state(comp_year))
+    else:  # vs 3-Yr Avg — average each prior year's DISTRICT totals
+        prior = [y for y in [year-1, year-2, year-3] if y >= 2022]
+        frames = [_agg(_load_state(y)) for y in prior]
+        frames = [f for f in frames if not f.empty]
+        if not frames:
+            return cur.reset_index()
+        base = pd.concat(frames, axis=1).mean(axis=1)
+
+    result = _pct(cur, base)
+    return result.reset_index().rename(columns={0: "Value"})
+
+
+def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFrame,
+                             state: str, crop: str, year: int,
+                             metric: str, change_view: str, logo_50yr) -> go.Figure:
+    """Build a state choropleth coloured by ASD district with boundary lines and labels."""
+    if dist_gdf.empty or dist_view_df.empty:
+        return None
+
+    cfg        = _nass_view_cfg(metric, change_view)
+    view_label = metric if change_view == "Current Year" else f"{change_view} — {metric}"
+    state_name = ABBR_TO_NAME.get(state, state)
+
+    dist_val_map = dict(zip(dist_view_df["District"], dist_view_df["Value"]))
+    state_fips   = STATE_FIPS_ALL.get(state)
+
+    # Convert dissolved GeoDataFrame to GeoJSON for Plotly
+    dist_geojson = json.loads(dist_gdf.to_json())
+
+    districts   = dist_gdf["District"].tolist()
+    z_vals      = [dist_val_map.get(d, 0) for d in districts]
+    hover_texts = [
+        f"<b>{d}</b><br>{z:.1f}%" if change_view != "Current Year"
+        else f"<b>{d}</b><br>{z:,.0f}" + (" bu/ac" if metric == "Yield (bu/ac)" else "")
+        for d, z in zip(districts, z_vals)
+    ]
+
+    _z_pos = [v for v in z_vals if v > 0]
+    if cfg["diverging"]:
+        _abs = max((abs(v) for v in z_vals), default=1.0)
+        z_min, z_max = -max(_abs, 1.0), max(_abs, 1.0)
+    else:
+        z_min = 0
+        z_max = max(_z_pos) if _z_pos else 1
+
+    fig = go.Figure()
+
+    # District fill
+    fig.add_trace(go.Choropleth(
+        geojson=dist_geojson,
+        featureidkey="properties.District",
+        locations=districts, z=z_vals,
+        colorscale=cfg["cscale"], zmin=z_min, zmax=z_max,
+        colorbar=dict(
+            title=dict(text=cfg["clabel"], font=dict(color=TEXT)),
+            tickfont=dict(color=TEXT),
+        ),
+        marker=dict(line=dict(color=BORDER, width=0.5)),
+        text=hover_texts,
+        hovertemplate="%{text}<extra></extra>",
+    ))
+
+    # District boundary lines + labels
+    all_lons, all_lats   = [], []
+    lbl_lons, lbl_lats, lbl_texts = [], [], []
+    for _, row in dist_gdf.iterrows():
+        geom  = row.geometry
+        polys = [geom] if geom.geom_type == "Polygon" else list(geom.geoms)
+        for poly in polys:
+            xs, ys = poly.exterior.coords.xy
+            all_lons.extend(list(xs) + [None])
+            all_lats.extend(list(ys) + [None])
+        _dn = row["District"]
+        _dv = dist_val_map.get(_dn)
+        _vs = (f"{'+'if _dv>=0 else ''}{_dv:.1f}%"
+               if change_view != "Current Year" and _dv is not None
+               else (cfg["label_fn"](_dv) if _dv is not None else ""))
+        lbl_lons.append(row["centroid_lon"])
+        lbl_lats.append(row["centroid_lat"])
+        lbl_texts.append(f"{_dn.upper()}<br>{_vs}")
+
+    fig.add_trace(go.Scattergeo(
+        lon=all_lons, lat=all_lats, mode="lines",
+        line=dict(color="white", width=1.8),
+        showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Scattergeo(
+        lon=lbl_lons, lat=lbl_lats, mode="text",
+        text=lbl_texts,
+        textfont=dict(color="black", size=9, family="Arial Black"),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    fig.update_geos(fitbounds="locations", visible=False,
+                    bgcolor=DARK, landcolor=LAND, showframe=False)
+    fig.update_layout(
+        **_base_layout(
+            f"NASS {year} {crop} — {view_label} | {state_name} AG Districts"
+        ),
+        height=620,
+        margin=dict(l=0, r=0, t=50, b=0),
+        geo=dict(showlakes=False),
+    )
+    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    return fig
+
+
+@st.cache_data(show_spinner=False)
+def cached_nass_district_fig(state: str, crop: str, year: int,
+                              metric: str, change_view: str,
+                              comp_year: int, cache_ver: str,
+                              _geo, _logo_50yr, _fips_map):
+    dist_view_df = get_nass_district_view_data(
+        crop, year, metric, change_view, _fips_map, state,
+        comp_year if comp_year > 0 else None,
+    )
+    dist_gdf = build_nass_district_gdf(
+        STATE_FIPS_ALL.get(state, ""), cache_ver, _fips_map, _geo
+    )
+    return build_nass_district_fig(
+        dist_view_df, dist_gdf, state, crop, year, metric, change_view, _logo_50yr
+    )
 
 
 # ── GeoJSON & lookups ─────────────────────────────────────────────────────────
@@ -1224,6 +1454,8 @@ def main():
     with tab_nass:
         if "nass_sel_state" not in st.session_state:
             st.session_state.nass_sel_state = None
+        if "nass_map_view" not in st.session_state:
+            st.session_state.nass_map_view = "ASD District"
 
         # Row 1 — Crop, Year, State drill-down, Refresh
         nc1, nc2, nc3, nc4 = st.columns([1, 0.75, 1.8, 0.55])
@@ -1405,9 +1637,20 @@ def main():
                 nass_state = sel_st
                 state_df   = nass_df[nass_df["State"] == nass_state].copy()
 
-                if st.button("← Back to US Map", key="nass_back_btn"):
-                    st.session_state.nass_sel_state = None
-                    st.rerun()
+                # Back button + map-view toggle on the same row
+                _back_col, _view_col, _ = st.columns([0.7, 2.2, 2])
+                with _back_col:
+                    if st.button("← Back", key="nass_back_btn"):
+                        st.session_state.nass_sel_state = None
+                        st.rerun()
+                with _view_col:
+                    nass_map_view = st.radio(
+                        "Map View",
+                        ["ASD District", "County"],
+                        horizontal=True,
+                        key="nass_map_view",
+                        index=0,
+                    )
 
                 if state_df.empty or state_df["Production"].sum() == 0:
                     st.warning(
@@ -1415,6 +1658,26 @@ def main():
                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}. "
                         "This crop may not be produced in this state or data has not been published."
                     )
+                elif nass_map_view == "ASD District":
+                    _sfips = STATE_FIPS_ALL.get(nass_state, "")
+                    with st.spinner(
+                        f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} ASD district map…"
+                    ):
+                        _fips_map = load_boundary_fips_map(
+                            nass_crop, _sfips, _CACHE_VERSION, geo
+                        )
+                        nass_dist_fig = cached_nass_district_fig(
+                            nass_state, nass_crop, nass_year,
+                            nass_metric, nass_change,
+                            nass_comp_yr if nass_comp_yr else 0,
+                            _CACHE_VERSION, geo, logo_50yr, _fips_map,
+                        )
+                    if nass_dist_fig is None:
+                        st.info(f"ASD district map not available for "
+                                f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
+                    else:
+                        st.plotly_chart(nass_dist_fig, use_container_width=True,
+                                        key="nass_district_map")
                 else:
                     with st.spinner(
                         f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
@@ -1433,7 +1696,6 @@ def main():
                     else:
                         st.plotly_chart(nass_county_fig, use_container_width=True,
                                         key="nass_county_map")
-                        st.caption("Use ← Back to US Map to return to the national overview.")
 
                 st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                             unsafe_allow_html=True)
