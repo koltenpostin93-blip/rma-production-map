@@ -1814,21 +1814,73 @@ def main():
 
                     # ── Map ───────────────────────────────────────────────────
                     if nass_map_view == "ASD District":
-                        with st.spinner(
-                            f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} ASD district map…"
-                        ):
-                            nass_dist_fig = cached_nass_district_fig(
-                                nass_state, nass_crop, nass_year,
-                                nass_metric, nass_change,
-                                nass_comp_yr if nass_comp_yr else 0,
-                                _CACHE_VERSION, geo, logo_50yr, _fips_map,
+                        # Current-year absolute district values for the side table
+                        _dist_abs  = get_nass_district_view_data(
+                            nass_crop, nass_year, nass_metric, "Current Year",
+                            _fips_map, nass_state, None,
+                        )
+                        _abs_cfg_d = _nass_view_cfg(nass_metric, "Current Year")
+                        _is_yield  = nass_metric == "Yield (bu/ac)"
+
+                        # Build name → ASD code lookup from fips_map
+                        _name_to_code = {
+                            v[0]: v[1] for v in _fips_map.values() if v[0] and v[1]
+                        }
+
+                        if not _dist_abs.empty:
+                            _dt = _dist_abs.copy()
+                            _dt["ASD"] = _dt["District"].map(_name_to_code).fillna("")
+                            _dt = _dt.sort_values("ASD").reset_index(drop=True)
+                            _dt[nass_metric] = _dt["Value"].apply(_abs_cfg_d["label_fn"])
+                            _st_total = (
+                                _dt["Value"].mean() if _is_yield
+                                else _dt["Value"].sum()
                             )
-                        if nass_dist_fig is None:
-                            st.info(f"ASD district map not available for "
-                                    f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
+                            _dt["% of State"] = (
+                                (_dt["Value"] / _st_total * 100
+                                 ).round(1).astype(str)
+                                if not _is_yield and _st_total > 0
+                                else "—"
+                            )
+                            _tbl_col, _map_col = st.columns([1, 2.5])
+                            with _tbl_col:
+                                st.markdown(
+                                    f"<p style='color:{MUTED};font-size:0.78rem;"
+                                    f"margin:0 0 4px 0;'>"
+                                    f"{ABBR_TO_NAME.get(nass_state,nass_state)} "
+                                    f"{nass_year} {nass_crop}</p>",
+                                    unsafe_allow_html=True,
+                                )
+                                st.dataframe(
+                                    _dt[["District", "ASD", nass_metric, "% of State"]],
+                                    use_container_width=True, hide_index=True,
+                                )
+                                _km1, _km2 = st.columns(2)
+                                _km1.metric(
+                                    "State Avg" if _is_yield else "State Total",
+                                    _abs_cfg_d["label_fn"](_st_total),
+                                )
+                                _km2.metric("Districts", f"{len(_dt)}")
                         else:
-                            st.plotly_chart(nass_dist_fig, use_container_width=True,
-                                            key="nass_district_map")
+                            _map_col = st.container()
+
+                        with _map_col:
+                            with st.spinner(
+                                f"Building {ABBR_TO_NAME.get(nass_state, nass_state)}"
+                                " ASD district map…"
+                            ):
+                                nass_dist_fig = cached_nass_district_fig(
+                                    nass_state, nass_crop, nass_year,
+                                    nass_metric, nass_change,
+                                    nass_comp_yr if nass_comp_yr else 0,
+                                    _CACHE_VERSION, geo, logo_50yr, _fips_map,
+                                )
+                            if nass_dist_fig is None:
+                                st.info(f"ASD district map not available for "
+                                        f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
+                            else:
+                                st.plotly_chart(nass_dist_fig, use_container_width=True,
+                                                key="nass_district_map")
                     else:
                         with st.spinner(
                             f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
