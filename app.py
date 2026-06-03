@@ -629,14 +629,11 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFra
 
     fig.update_geos(fitbounds="locations", visible=False,
                     bgcolor=DARK, landcolor=LAND, showframe=False)
-    fig.update_layout(
-        **_base_layout(
-            f"NASS {year} {crop} — {view_label} | {state_name} AG Districts"
-        ),
-        height=620,
-        margin=dict(l=0, r=0, t=50, b=0),
-        geo=dict(showlakes=False),
+    _layout = _base_layout(
+        f"NASS {year} {crop} — {view_label} | {state_name} AG Districts"
     )
+    _layout.update(height=620, geo=dict(showlakes=False))
+    fig.update_layout(**_layout)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
     return fig
 
