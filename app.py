@@ -18,7 +18,7 @@ st.set_page_config(
     page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
     layout="wide",
 )
-_CACHE_VERSION = "v9"   # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v10"  # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
