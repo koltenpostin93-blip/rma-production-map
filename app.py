@@ -650,7 +650,7 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
         # Label line 3: % change (comparison modes only)
         if change_view != "Current Year" and _dv is not None:
             _sign = "+" if _dv >= 0 else ""
-            _lbl  = f"{_dn.upper()}<br>{_rv_s}<br>{_sign}{_dv:.1f}%"
+            _lbl  = f"{_dn.upper()}<br>{_sign}{_dv:.1f}%"
         else:
             _lbl  = f"{_dn.upper()}<br>{_rv_s}"
 
