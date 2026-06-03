@@ -1318,6 +1318,103 @@ def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
     return fig
 
 
+# One color per ASD district code (10–90)
+_ASD_PALETTE = {
+    "10": "#4ade80", "20": "#60a5fa", "30": "#f59e0b",
+    "40": "#f87171", "50": "#a78bfa", "60": "#34d399",
+    "70": "#fb923c", "80": "#38bdf8", "90": "#e879f9",
+}
+
+
+def build_nass_asd_ranking_chart(state_county_v, fips_map, fips_lk,
+                                  state, crop, year, metric, change_view):
+    """Bar chart of all counties in a state, sorted and coloured by ASD district."""
+    cfg        = _nass_view_cfg(metric, change_view)
+    view_label = metric if change_view == "Current Year" else f"{change_view} — {metric}"
+    state_name = ABBR_TO_NAME.get(state, state)
+
+    df = state_county_v.dropna(subset=["Value"]).copy()
+    if df.empty:
+        return go.Figure()
+
+    # Attach district info via fips_map
+    df["fips"]         = df["County"].apply(lambda c: resolve_fips(state, c, fips_lk))
+    df["District"]     = df["fips"].map(lambda f: (fips_map.get(f) or (None,None))[0])
+    df["DistrictCode"] = df["fips"].map(lambda f: (fips_map.get(f) or (None,""))[1])
+
+    # Sort: district code ascending, then value ascending within district
+    df = df.sort_values(
+        ["DistrictCode", "Value"], ascending=[True, True]
+    ).reset_index(drop=True)
+
+    df["Color"] = df["DistrictCode"].map(_ASD_PALETTE).fillna(MUTED)
+
+    x_vals   = df["Value"] / cfg["rank_div"]
+    raw_avg  = df["Value"].mean()
+    avg_disp = raw_avg / cfg["rank_div"]
+    fmt      = cfg["rank_fmt"]
+
+    fig = go.Figure(go.Bar(
+        x=x_vals, y=df["County"], orientation="h",
+        marker_color=df["Color"].tolist(), marker_line_width=0,
+        text=[f"{v:{fmt}}" for v in x_vals],
+        textposition="outside",
+        textfont=dict(color=TEXT, size=8), cliponaxis=False,
+        customdata=df["District"].fillna("—").tolist(),
+        hovertemplate=(
+            f"%{{y}} — %{{customdata}}: %{{x:{fmt}}} {cfg['rank_unit']}<extra></extra>"
+        ),
+    ))
+
+    # State-average reference line
+    fig.add_vline(
+        x=avg_disp, line_color="#f5a623", line_width=1.5, line_dash="dash",
+        annotation_text=f"  Avg: {avg_disp:{fmt}} {cfg['rank_unit']}",
+        annotation_position="top left",
+        annotation_font=dict(color="#f5a623", size=10),
+    )
+
+    # Horizontal separator lines + district label between groups
+    cumulative = 0
+    for code in sorted(df["DistrictCode"].dropna().unique()):
+        grp = df[df["DistrictCode"] == code]
+        if grp.empty:
+            continue
+        dist_name = grp.iloc[0]["District"] or code
+        color     = _ASD_PALETTE.get(code, MUTED)
+
+        if cumulative > 0:
+            fig.add_hline(y=cumulative - 0.5,
+                          line_color=BORDER, line_width=1.5, line_dash="dot")
+
+        fig.add_annotation(
+            x=0, y=cumulative + len(grp) / 2 - 0.5,
+            xref="paper", yref="y",
+            text=f"<b>{dist_name}</b>",
+            font=dict(color=color, size=8),
+            showarrow=False, xanchor="right", xshift=-4,
+        )
+        cumulative += len(grp)
+
+    fig.update_layout(
+        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+        font=dict(color=TEXT, family="Arial"),
+        title=dict(
+            text=f"{state_name} County Rankings by AG District — {crop} {view_label} (NASS {year})",
+            font=dict(size=14, color=ACCENT),
+        ),
+        height=max(400, len(df) * 22 + 80),
+        margin=dict(l=110, r=90, t=50, b=20), bargap=0.18,
+        xaxis=dict(
+            title=f"{view_label} ({cfg['rank_unit']})", gridcolor=BORDER,
+            tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
+            zeroline=True, zerolinecolor=MUTED,
+        ),
+        yaxis=dict(gridcolor=BORDER, tickfont=dict(color=TEXT, size=9), automargin=True),
+    )
+    return fig
+
+
 # ── Cached county figure wrappers ─────────────────────────────────────────────
 # Cache key = hashable args only.  _geo / _centroids / _logo / _fips_lk are
 # excluded (underscore prefix) so large objects aren't hashed into the key.
@@ -1655,97 +1752,226 @@ def main():
                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}. "
                         "This crop may not be produced in this state or data has not been published."
                     )
-                elif nass_map_view == "ASD District":
-                    _sfips = STATE_FIPS_ALL.get(nass_state, "")
-                    with st.spinner(
-                        f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} ASD district map…"
-                    ):
-                        _fips_map = load_boundary_fips_map(
-                            nass_crop, _sfips, _CACHE_VERSION, geo
-                        )
-                        nass_dist_fig = cached_nass_district_fig(
-                            nass_state, nass_crop, nass_year,
-                            nass_metric, nass_change,
-                            nass_comp_yr if nass_comp_yr else 0,
-                            _CACHE_VERSION, geo, logo_50yr, _fips_map,
-                        )
-                    if nass_dist_fig is None:
-                        st.info(f"ASD district map not available for "
-                                f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
-                    else:
-                        st.plotly_chart(nass_dist_fig, use_container_width=True,
-                                        key="nass_district_map")
                 else:
-                    with st.spinner(
-                        f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
-                    ):
-                        nass_county_fig = cached_nass_county_fig(
-                            nass_state, nass_crop, nass_year,
-                            nass_metric, nass_change,
-                            nass_comp_yr if nass_comp_yr else 0,
-                            _CACHE_VERSION, geo, centroids, logo_50yr, fips_lk
-                        )
-                    if nass_county_fig is None:
-                        st.info(
-                            f"County map not available for "
-                            f"{ABBR_TO_NAME.get(nass_state, nass_state)}."
-                        )
-                    else:
-                        st.plotly_chart(nass_county_fig, use_container_width=True,
-                                        key="nass_county_map")
-
-                st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
-                            unsafe_allow_html=True)
-
-                state_county_v = county_vdf[county_vdf["State"] == nass_state].copy()
-                if not state_county_v.empty:
-                    ranking_nass = build_nass_ranking_chart(
-                        state_county_v, nass_state, nass_crop, nass_year,
-                        nass_metric, nass_change,
+                    # Load fips_map always — used by both the ASD map and the
+                    # ASD-grouped ranking chart regardless of current map view.
+                    _sfips    = STATE_FIPS_ALL.get(nass_state, "")
+                    _fips_map = load_boundary_fips_map(
+                        nass_crop, _sfips, _CACHE_VERSION, geo
                     )
-                    st.plotly_chart(ranking_nass, use_container_width=True, key="nass_ranking")
 
-                with st.expander(
-                    f"County Data Table — {ABBR_TO_NAME.get(nass_state, nass_state)}",
-                    expanded=False,
-                ):
-                    # Build display table from state_county_v (selected metric/view values)
-                    tbl = state_county_v[["County", "Value"]].dropna(subset=["Value"]).sort_values(
-                        "Value", ascending=False
-                    ).copy()
+                    # ── Map ───────────────────────────────────────────────────
+                    if nass_map_view == "ASD District":
+                        with st.spinner(
+                            f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} ASD district map…"
+                        ):
+                            nass_dist_fig = cached_nass_district_fig(
+                                nass_state, nass_crop, nass_year,
+                                nass_metric, nass_change,
+                                nass_comp_yr if nass_comp_yr else 0,
+                                _CACHE_VERSION, geo, logo_50yr, _fips_map,
+                            )
+                        if nass_dist_fig is None:
+                            st.info(f"ASD district map not available for "
+                                    f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
+                        else:
+                            st.plotly_chart(nass_dist_fig, use_container_width=True,
+                                            key="nass_district_map")
+                    else:
+                        with st.spinner(
+                            f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
+                        ):
+                            nass_county_fig = cached_nass_county_fig(
+                                nass_state, nass_crop, nass_year,
+                                nass_metric, nass_change,
+                                nass_comp_yr if nass_comp_yr else 0,
+                                _CACHE_VERSION, geo, centroids, logo_50yr, fips_lk
+                            )
+                        if nass_county_fig is None:
+                            st.info(
+                                f"County map not available for "
+                                f"{ABBR_TO_NAME.get(nass_state, nass_state)}."
+                            )
+                        else:
+                            st.plotly_chart(nass_county_fig, use_container_width=True,
+                                            key="nass_county_map")
+
+                    st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
+                                unsafe_allow_html=True)
+
+                    # ── Historical Summary Table ───────────────────────────────
+                    _state_full = ABBR_TO_NAME.get(nass_state, nass_state)
+                    st.markdown(
+                        f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
+                        f"margin:0 0 6px 0;letter-spacing:0.04em;'>"
+                        f"📅 HISTORICAL SUMMARY — {_state_full} | 2022–2025</p>",
+                        unsafe_allow_html=True,
+                    )
+
+                    _HIST_YEARS     = [2022, 2023, 2024, 2025]
+                    _HIST_STATTYPES = ["planted", "harvested", "yield", "production"]
+                    _HIST_ROW_LBL   = {
+                        "planted":    "Planted Acres (000 ac)",
+                        "harvested":  "Harvested Acres (000 ac)",
+                        "yield":      "Yield (bu/ac)",
+                        "production": "Production (M bu)",
+                    }
+
+                    with st.spinner("Loading historical data…"):
+                        _hist: dict = {}
+                        for _hyr in _HIST_YEARS:
+                            _hist[_hyr] = {}
+                            for _hst in _HIST_STATTYPES:
+                                try:
+                                    _hdf = load_nass_state(nass_crop, _hyr, _hst, _CACHE_VERSION)
+                                    _hdf_s = (
+                                        _hdf[_hdf["State"] == nass_state]
+                                        if not _hdf.empty and "State" in _hdf.columns
+                                        else pd.DataFrame()
+                                    )
+                                    _hist[_hyr][_hst] = (
+                                        float(_hdf_s["Value"].iloc[0])
+                                        if not _hdf_s.empty else None
+                                    )
+                                except Exception:
+                                    _hist[_hyr][_hst] = None
+
+                    def _hfmt(stype, v):
+                        if v is None or (isinstance(v, float) and np.isnan(v)):
+                            return "—"
+                        if stype == "production":   return f"{v/1e6:,.0f}"
+                        if stype in ("planted","harvested"): return f"{v/1e3:,.0f}"
+                        if stype == "yield":        return f"{v:.1f}"
+                        return f"{v:,.0f}"
+
+                    def _hdelta_str(v):
+                        if v is None or (isinstance(v, float) and np.isnan(v)):
+                            return ""
+                        return f" ({'+'if v>=0 else ''}{v:.1f}%)"
+
+                    # Compute deltas using same nass_change view as map
+                    _hdelta: dict = {yr: {} for yr in _HIST_YEARS}
+                    if nass_change == "vs Prior Year":
+                        for _hi, _hyr in enumerate(_HIST_YEARS):
+                            if _hi == 0:
+                                continue
+                            _hprev = _HIST_YEARS[_hi - 1]
+                            for _hst in _HIST_STATTYPES:
+                                _hc, _hp = _hist[_hyr].get(_hst), _hist[_hprev].get(_hst)
+                                _hdelta[_hyr][_hst] = (
+                                    (_hc - _hp) / abs(_hp) * 100
+                                    if _hc and _hp else None
+                                )
+                    elif nass_change == "vs 3-Yr Avg":
+                        for _hst in _HIST_STATTYPES:
+                            _hvals = [_hist[y].get(_hst) for y in _HIST_YEARS[:3]
+                                      if _hist[y].get(_hst)]
+                            _havg  = sum(_hvals) / len(_hvals) if _hvals else None
+                            for _hyr in _HIST_YEARS:
+                                _hc = _hist[_hyr].get(_hst)
+                                _hdelta[_hyr][_hst] = (
+                                    (_hc - _havg) / abs(_havg) * 100
+                                    if _hc and _havg else None
+                                )
+                    elif nass_change == "vs Selected Year" and nass_comp_yr:
+                        for _hyr in _HIST_YEARS:
+                            for _hst in _HIST_STATTYPES:
+                                _hc   = _hist[_hyr].get(_hst)
+                                _hbase= _hist[nass_comp_yr].get(_hst)
+                                _hdelta[_hyr][_hst] = (
+                                    (_hc - _hbase) / abs(_hbase) * 100
+                                    if _hc and _hbase and _hyr != nass_comp_yr else None
+                                )
+
+                    _htbl_rows = []
+                    for _hst in _HIST_STATTYPES:
+                        _hrow = {"": _HIST_ROW_LBL[_hst]}
+                        for _hyr in _HIST_YEARS:
+                            _raw_s = _hfmt(_hst, _hist[_hyr].get(_hst))
+                            _dlt_s = (
+                                _hdelta_str(_hdelta[_hyr].get(_hst))
+                                if nass_change != "Current Year" else ""
+                            )
+                            _hrow[str(_hyr)] = f"{_raw_s}{_dlt_s}"
+                        _htbl_rows.append(_hrow)
+
+                    _htbl_df = pd.DataFrame(_htbl_rows).set_index("")
+
+                    def _htbl_style(val):
+                        if "(+" in str(val): return f"color:{ACCENT};font-weight:600"
+                        if "(-" in str(val): return "color:#ef4444;font-weight:600"
+                        return ""
 
                     if nass_change != "Current Year":
-                        col_label = f"% Change ({nass_metric})"
-                        tbl[col_label] = tbl["Value"].apply(
-                            lambda v: f"{v:+.1f}%" if pd.notna(v) else "—"
-                        )
-                    elif nass_metric == "Yield (bu/ac)":
-                        col_label = "Yield (bu/ac)"
-                        tbl[col_label] = tbl["Value"].apply(
-                            lambda v: f"{v:.1f}" if pd.notna(v) else "—"
-                        )
-                    elif nass_metric in ("Planted Acres", "Harvested Acres", "Prevent Plant Acres"):
-                        col_label = nass_metric
-                        tbl[col_label] = tbl["Value"].apply(
-                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                        st.dataframe(
+                            _htbl_df.style.map(_htbl_style),
+                            use_container_width=True,
                         )
                     else:
-                        col_label = "Production (bu)"
-                        tbl[col_label] = tbl["Value"].apply(
-                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
-                        )
+                        st.dataframe(_htbl_df, use_container_width=True)
 
-                    show_tbl = tbl[["County", col_label]].copy()
-                    # Add production as context when showing a non-production metric
-                    if nass_metric != "Production (bu)":
-                        prod_ctx = state_df[["County", "Production"]].copy()
-                        prod_ctx["Production (bu)"] = prod_ctx["Production"].apply(
-                            lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
-                        )
-                        show_tbl = show_tbl.merge(
-                            prod_ctx[["County", "Production (bu)"]], on="County", how="left"
-                        )
-                    st.dataframe(show_tbl, use_container_width=True, hide_index=True)
+                    st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
+                                unsafe_allow_html=True)
+
+                    # ── Ranking Chart ─────────────────────────────────────────
+                    state_county_v = county_vdf[county_vdf["State"] == nass_state].copy()
+                    if not state_county_v.empty:
+                        if nass_map_view == "ASD District":
+                            ranking_nass = build_nass_asd_ranking_chart(
+                                state_county_v, _fips_map, fips_lk,
+                                nass_state, nass_crop, nass_year,
+                                nass_metric, nass_change,
+                            )
+                        else:
+                            ranking_nass = build_nass_ranking_chart(
+                                state_county_v, nass_state, nass_crop, nass_year,
+                                nass_metric, nass_change,
+                            )
+                        st.plotly_chart(ranking_nass, use_container_width=True,
+                                        key="nass_ranking")
+
+                    # ── County Data Table ─────────────────────────────────────
+                    with st.expander(
+                        f"County Data Table — {ABBR_TO_NAME.get(nass_state, nass_state)}",
+                        expanded=False,
+                    ):
+                        tbl = state_county_v[["County", "Value"]].dropna(
+                            subset=["Value"]
+                        ).sort_values("Value", ascending=False).copy()
+
+                        if nass_change != "Current Year":
+                            col_label = f"% Change ({nass_metric})"
+                            tbl[col_label] = tbl["Value"].apply(
+                                lambda v: f"{v:+.1f}%" if pd.notna(v) else "—"
+                            )
+                        elif nass_metric == "Yield (bu/ac)":
+                            col_label = "Yield (bu/ac)"
+                            tbl[col_label] = tbl["Value"].apply(
+                                lambda v: f"{v:.1f}" if pd.notna(v) else "—"
+                            )
+                        elif nass_metric in ("Planted Acres", "Harvested Acres",
+                                             "Prevent Plant Acres"):
+                            col_label = nass_metric
+                            tbl[col_label] = tbl["Value"].apply(
+                                lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                            )
+                        else:
+                            col_label = "Production (bu)"
+                            tbl[col_label] = tbl["Value"].apply(
+                                lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                            )
+
+                        show_tbl = tbl[["County", col_label]].copy()
+                        if nass_metric != "Production (bu)":
+                            prod_ctx = state_df[["County", "Production"]].copy()
+                            prod_ctx["Production (bu)"] = prod_ctx["Production"].apply(
+                                lambda v: f"{v:,.0f}" if pd.notna(v) else "—"
+                            )
+                            show_tbl = show_tbl.merge(
+                                prod_ctx[["County", "Production (bu)"]],
+                                on="County", how="left",
+                            )
+                        st.dataframe(show_tbl, use_container_width=True, hide_index=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # RMA TAB
