@@ -546,10 +546,14 @@ def get_nass_district_view_data(crop: str, year: int, metric: str,
     return result.reset_index().rename(columns={0: "Value"})
 
 
-def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFrame,
+def build_nass_district_fig(dist_view_df: pd.DataFrame,
+                             dist_raw_df,          # absolute metric values for labels
+                             dist_gdf: gpd.GeoDataFrame,
                              state: str, crop: str, year: int,
-                             metric: str, change_view: str, logo_50yr) -> go.Figure:
-    """Build a state choropleth coloured by ASD district with boundary lines and labels."""
+                             metric: str, change_view: str,
+                             logo_50yr, geo=None) -> go.Figure:
+    """Build a state choropleth coloured by ASD district with county outlines,
+    bold district boundaries, and labels showing metric value + % change."""
     if dist_gdf.empty or dist_view_df.empty:
         return None
 
@@ -558,18 +562,28 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFra
     state_name = ABBR_TO_NAME.get(state, state)
 
     dist_val_map = dict(zip(dist_view_df["District"], dist_view_df["Value"]))
-    state_fips   = STATE_FIPS_ALL.get(state)
+    # Raw (absolute) values for the metric label — always show regardless of view
+    raw_map = (
+        dict(zip(dist_raw_df["District"], dist_raw_df["Value"]))
+        if dist_raw_df is not None and not dist_raw_df.empty else {}
+    )
+    state_fips = STATE_FIPS_ALL.get(state)
 
     # Convert dissolved GeoDataFrame to GeoJSON for Plotly
     dist_geojson = json.loads(dist_gdf.to_json())
 
-    districts   = dist_gdf["District"].tolist()
-    z_vals      = [dist_val_map.get(d, 0) for d in districts]
-    hover_texts = [
-        f"<b>{d}</b><br>{z:.1f}%" if change_view != "Current Year"
-        else f"<b>{d}</b><br>{z:,.0f}" + (" bu/ac" if metric == "Yield (bu/ac)" else "")
-        for d, z in zip(districts, z_vals)
-    ]
+    districts = dist_gdf["District"].tolist()
+    z_vals    = [dist_val_map.get(d, 0) for d in districts]
+
+    # Hover: always show raw metric value + % change in comparison modes
+    def _hover(d, z):
+        rv  = raw_map.get(d)
+        rv_s = cfg["label_fn"](rv) if rv is not None else ""
+        if change_view != "Current Year" and z:
+            return f"<b>{d}</b><br>{rv_s}<br>{'+'if z>=0 else ''}{z:.1f}%"
+        return f"<b>{d}</b><br>{rv_s}"
+
+    hover_texts = [_hover(d, z) for d, z in zip(districts, z_vals)]
 
     _z_pos = [v for v in z_vals if v > 0]
     if cfg["diverging"]:
@@ -581,7 +595,7 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFra
 
     fig = go.Figure()
 
-    # District fill
+    # Layer 1 — district fill (coloured polygons)
     fig.add_trace(go.Choropleth(
         geojson=dist_geojson,
         featureidkey="properties.District",
@@ -591,12 +605,28 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFra
             title=dict(text=cfg["clabel"], font=dict(color=TEXT)),
             tickfont=dict(color=TEXT),
         ),
-        marker=dict(line=dict(color=BORDER, width=0.5)),
+        marker=dict(line=dict(color=BORDER, width=0.3)),
         text=hover_texts,
         hovertemplate="%{text}<extra></extra>",
     ))
 
-    # District boundary lines + labels
+    # Layer 2 — county outlines (transparent fill, faint grid lines within districts)
+    if geo is not None and state_fips:
+        _county_feats = [f for f in geo["features"]
+                         if f["properties"]["STATE"] == state_fips]
+        _county_fips  = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
+                         for f in _county_feats]
+        _county_geo   = {"type": "FeatureCollection", "features": _county_feats}
+        fig.add_trace(go.Choropleth(
+            geojson=_county_geo, featureidkey="id",
+            locations=_county_fips, z=[0] * len(_county_fips),
+            colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],
+            showscale=False,
+            marker=dict(line=dict(color="rgba(90,90,90,0.55)", width=0.5)),
+            hoverinfo="skip",
+        ))
+
+    # Layer 3 — district boundary lines (bold white, drawn over county grid)
     all_lons, all_lats   = [], []
     lbl_lons, lbl_lats, lbl_texts = [], [], []
     for _, row in dist_gdf.iterrows():
@@ -606,20 +636,31 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame, dist_gdf: gpd.GeoDataFra
             xs, ys = poly.exterior.coords.xy
             all_lons.extend(list(xs) + [None])
             all_lats.extend(list(ys) + [None])
-        _dn = row["District"]
-        _dv = dist_val_map.get(_dn)
-        _vs = (f"{'+'if _dv>=0 else ''}{_dv:.1f}%"
-               if change_view != "Current Year" and _dv is not None
-               else (cfg["label_fn"](_dv) if _dv is not None else ""))
+
+        _dn  = row["District"]
+        _dv  = dist_val_map.get(_dn)
+        _rv  = raw_map.get(_dn)
+        _rv_s = cfg["label_fn"](_rv) if _rv is not None else ""
+
+        # Label line 1: district name
+        # Label line 2: metric value (always)
+        # Label line 3: % change (comparison modes only)
+        if change_view != "Current Year" and _dv is not None:
+            _sign = "+" if _dv >= 0 else ""
+            _lbl  = f"{_dn.upper()}<br>{_rv_s}<br>{_sign}{_dv:.1f}%"
+        else:
+            _lbl  = f"{_dn.upper()}<br>{_rv_s}"
+
         lbl_lons.append(row["centroid_lon"])
         lbl_lats.append(row["centroid_lat"])
-        lbl_texts.append(f"{_dn.upper()}<br>{_vs}")
+        lbl_texts.append(_lbl)
 
     fig.add_trace(go.Scattergeo(
         lon=all_lons, lat=all_lats, mode="lines",
         line=dict(color="white", width=1.8),
         showlegend=False, hoverinfo="skip",
     ))
+    # Layer 4 — district name + value labels
     fig.add_trace(go.Scattergeo(
         lon=lbl_lons, lat=lbl_lats, mode="text",
         text=lbl_texts,
@@ -643,15 +684,23 @@ def cached_nass_district_fig(state: str, crop: str, year: int,
                               metric: str, change_view: str,
                               comp_year: int, cache_ver: str,
                               _geo, _logo_50yr, _fips_map):
+    # View data (absolute or % change depending on change_view)
     dist_view_df = get_nass_district_view_data(
         crop, year, metric, change_view, _fips_map, state,
         comp_year if comp_year > 0 else None,
     )
+    # Raw absolute values — always loaded so labels can show the metric value
+    # alongside % change in comparison modes
+    dist_raw_df = get_nass_district_view_data(
+        crop, year, metric, "Current Year", _fips_map, state, None,
+    ) if change_view != "Current Year" else dist_view_df
+
     dist_gdf = build_nass_district_gdf(
         STATE_FIPS_ALL.get(state, ""), cache_ver, _fips_map, _geo
     )
     return build_nass_district_fig(
-        dist_view_df, dist_gdf, state, crop, year, metric, change_view, _logo_50yr
+        dist_view_df, dist_raw_df, dist_gdf,
+        state, crop, year, metric, change_view, _logo_50yr, _geo,
     )
 
 
