@@ -567,6 +567,9 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
         dict(zip(dist_raw_df["District"], dist_raw_df["Value"]))
         if dist_raw_df is not None and not dist_raw_df.empty else {}
     )
+    # Always use the absolute-metric config for formatting raw values so we
+    # never accidentally apply the % change formatter to a bushel/acre figure
+    abs_cfg    = _nass_view_cfg(metric, "Current Year")
     state_fips = STATE_FIPS_ALL.get(state)
 
     # Convert dissolved GeoDataFrame to GeoJSON for Plotly
@@ -577,8 +580,8 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
 
     # Hover: always show raw metric value + % change in comparison modes
     def _hover(d, z):
-        rv  = raw_map.get(d)
-        rv_s = cfg["label_fn"](rv) if rv is not None else ""
+        rv   = raw_map.get(d)
+        rv_s = abs_cfg["label_fn"](rv) if rv is not None else ""
         if change_view != "Current Year" and z:
             return f"<b>{d}</b><br>{rv_s}<br>{'+'if z>=0 else ''}{z:.1f}%"
         return f"<b>{d}</b><br>{rv_s}"
@@ -640,7 +643,7 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
         _dn  = row["District"]
         _dv  = dist_val_map.get(_dn)
         _rv  = raw_map.get(_dn)
-        _rv_s = cfg["label_fn"](_rv) if _rv is not None else ""
+        _rv_s = abs_cfg["label_fn"](_rv) if _rv is not None else ""
 
         # Label line 1: district name
         # Label line 2: metric value (always)
