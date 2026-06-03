@@ -1853,10 +1853,42 @@ def main():
 
                     # ── Historical Summary Table ───────────────────────────────
                     _state_full = ABBR_TO_NAME.get(nass_state, nass_state)
+
+                    # Scope selector: State (default), ASD District, or County
+                    _hsc1, _hsc2 = st.columns([1.4, 2.6])
+                    with _hsc1:
+                        _htbl_scope = st.radio(
+                            "Table Scope",
+                            ["State", "ASD District", "County"],
+                            horizontal=True, key="htbl_scope",
+                        )
+                    with _hsc2:
+                        if _htbl_scope == "ASD District":
+                            _dist_opts = sorted(
+                                set(v[0] for v in _fips_map.values() if v[0])
+                            )
+                            _htbl_dist = st.selectbox(
+                                "District", _dist_opts, key="htbl_district"
+                            )
+                            _htbl_county = None
+                            _scope_label = f"{_state_full} — {_htbl_dist}"
+                        elif _htbl_scope == "County":
+                            _county_opts = sorted(
+                                state_df["County"].dropna().unique()
+                            )
+                            _htbl_county = st.selectbox(
+                                "County", _county_opts, key="htbl_county"
+                            )
+                            _htbl_dist = None
+                            _scope_label = f"{_state_full} — {_htbl_county} County"
+                        else:
+                            _htbl_dist = _htbl_county = None
+                            _scope_label = _state_full
+
                     st.markdown(
                         f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
                         f"margin:0 0 6px 0;letter-spacing:0.04em;'>"
-                        f"📅 HISTORICAL SUMMARY — {_state_full} | 2022–2025</p>",
+                        f"📅 HISTORICAL SUMMARY — {_scope_label} | 2022–2025</p>",
                         unsafe_allow_html=True,
                     )
 
@@ -1875,16 +1907,42 @@ def main():
                             _hist[_hyr] = {}
                             for _hst in _HIST_STATTYPES:
                                 try:
-                                    _hdf = load_nass_state(nass_crop, _hyr, _hst, _CACHE_VERSION)
-                                    _hdf_s = (
-                                        _hdf[_hdf["State"] == nass_state]
-                                        if not _hdf.empty and "State" in _hdf.columns
-                                        else pd.DataFrame()
-                                    )
-                                    _hist[_hyr][_hst] = (
-                                        float(_hdf_s["Value"].iloc[0])
-                                        if not _hdf_s.empty else None
-                                    )
+                                    if _htbl_scope == "State":
+                                        # Official state totals from state-level API
+                                        _hdf = load_nass_state(
+                                            nass_crop, _hyr, _hst, _CACHE_VERSION
+                                        )
+                                        _hdf_s = (
+                                            _hdf[_hdf["State"] == nass_state]
+                                            if not _hdf.empty and "State" in _hdf.columns
+                                            else pd.DataFrame()
+                                        )
+                                        _hist[_hyr][_hst] = (
+                                            float(_hdf_s["Value"].iloc[0])
+                                            if not _hdf_s.empty else None
+                                        )
+                                    else:
+                                        # County-level data filtered to district or county
+                                        _hdf = _load_for_metric(
+                                            nass_crop, _hyr, _hst
+                                        )
+                                        if _hdf.empty or "State" not in _hdf.columns:
+                                            _hist[_hyr][_hst] = None
+                                            continue
+                                        _hdf_s = _hdf[_hdf["State"] == nass_state].copy()
+                                        if _htbl_scope == "ASD District" and _htbl_dist:
+                                            _hdf_s["_Dist"] = _hdf_s["fips"].map(
+                                                lambda f: (_fips_map.get(f) or (None,))[0]
+                                            )
+                                            _hdf_s = _hdf_s[_hdf_s["_Dist"] == _htbl_dist]
+                                        elif _htbl_scope == "County" and _htbl_county:
+                                            _hdf_s = _hdf_s[_hdf_s["County"] == _htbl_county]
+                                        if _hdf_s.empty:
+                                            _hist[_hyr][_hst] = None
+                                        elif _hst == "yield":
+                                            _hist[_hyr][_hst] = float(_hdf_s["Value"].mean())
+                                        else:
+                                            _hist[_hyr][_hst] = float(_hdf_s["Value"].sum())
                                 except Exception:
                                     _hist[_hyr][_hst] = None
 
