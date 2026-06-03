@@ -30,7 +30,7 @@ LOGO_FULL  = HERE / "assets" / "logo-full.png"
 # ── NASS API ───────────────────────────────────────────────────────────────────
 NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
 NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
-NASS_YEARS             = [2025, 2024, 2023, 2022, 2021, 2020]
+NASS_YEARS             = list(range(2025, 2014, -1))   # 2025 → 2015
 _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % reporting KPI
 
 # Metrics available in the NASS tab
@@ -535,7 +535,7 @@ def get_nass_district_view_data(crop: str, year: int, metric: str,
     elif change_view == "vs Selected Year" and comp_year:
         base = _agg(_load_state(comp_year))
     else:  # vs 3-Yr Avg — average each prior year's DISTRICT totals
-        prior = [y for y in [year-1, year-2, year-3] if y >= 2020]
+        prior = [y for y in [year-1, year-2, year-3] if y >= 2015]
         frames = [_agg(_load_state(y)) for y in prior]
         frames = [f for f in frames if not f.empty]
         if not frames:
@@ -945,7 +945,7 @@ def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp
     elif change_view == "vs Selected Year":
         df_cmp = _load_for_metric(crop, comp_year, stat_type) if comp_year else df_cur
     else:  # vs 3-Yr Avg
-        prior_years = [y for y in [year - 1, year - 2, year - 3] if y >= 2020]
+        prior_years = [y for y in [year - 1, year - 2, year - 3] if y >= 2015]
         frames = [_load_for_metric(crop, y, stat_type) for y in prior_years]
         frames = [f for f in frames if not f.empty]
         if not frames:
@@ -1659,7 +1659,7 @@ def main():
                 load_nass_state(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION)
             elif nass_change == "vs 3-Yr Avg":
                 for _y in [nass_year - 1, nass_year - 2, nass_year - 3]:
-                    if _y >= 2020:
+                    if _y >= 2015:
                         _load_for_metric(nass_crop, _y, stat_type)
                         load_nass_state(nass_crop, _y, stat_type, _CACHE_VERSION)
             # County-level data for the county map
@@ -1681,7 +1681,7 @@ def main():
                     load_nass_state(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION),
                 )
             else:  # vs 3-Yr Avg
-                _sy = [y for y in [nass_year - 1, nass_year - 2, nass_year - 3] if y >= 2020]
+                _sy = [y for y in [nass_year - 1, nass_year - 2, nass_year - 3] if y >= 2015]
                 state_vdf = _state_pct_change_avg(
                     _st_cur,
                     [load_nass_state(nass_crop, y, stat_type, _CACHE_VERSION) for y in _sy],
@@ -1940,11 +1940,13 @@ def main():
                     st.markdown(
                         f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
                         f"margin:0 0 6px 0;letter-spacing:0.04em;'>"
-                        f"📅 HISTORICAL SUMMARY — {_scope_label} | 2020–2025</p>",
+                        f"📅 HISTORICAL SUMMARY — {_scope_label} | "
+                        f"{nass_year - 5}–{nass_year}</p>",
                         unsafe_allow_html=True,
                     )
 
-                    _HIST_YEARS     = [2020, 2021, 2022, 2023, 2024, 2025]
+                    # Rolling 6-year window ending at the selected year
+                    _HIST_YEARS = list(range(nass_year - 5, nass_year + 1))
                     _HIST_STATTYPES = ["planted", "harvested", "yield", "production"]
                     _HIST_ROW_LBL   = {
                         "planted":    "Planted Acres (000 ac)",
@@ -2026,7 +2028,9 @@ def main():
                                 )
                     elif nass_change == "vs 3-Yr Avg":
                         for _hst in _HIST_STATTYPES:
-                            _hvals = [_hist[y].get(_hst) for y in [2022, 2023, 2024]
+                            # 3-yr avg base = 3 years prior to the selected year
+                            _avg_base = [nass_year - 3, nass_year - 2, nass_year - 1]
+                            _hvals = [_hist[y].get(_hst) for y in _avg_base
                                       if _hist.get(y, {}).get(_hst)]
                             _havg  = sum(_hvals) / len(_hvals) if _hvals else None
                             for _hyr in _HIST_YEARS:
