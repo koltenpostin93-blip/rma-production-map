@@ -815,7 +815,11 @@ def get_nass_district_view_data(crop: str, year: int, metric: str,
     """
     stat_type = _METRIC_TO_STAT[metric]
     _estimable = {"production", "planted", "harvested", "yield"}
-    use_est    = (stat_type in _estimable and change_view == "Current Year")
+    # Use estimation for ALL views so comparison years also use completed
+    # county data — without this, prior-year district totals are understated
+    # by the fraction of unreported counties (e.g. 2024 Iowa at 75% coverage
+    # shows ~302M bu instead of ~394M bu, inflating % change by ~30%).
+    use_est    = stat_type in _estimable
 
     def _load_state(yr, use_estimation=False):
         if use_estimation:
