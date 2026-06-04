@@ -1818,6 +1818,8 @@ def build_heatmap_table(
     fmt: str = ",.0f",
     top_row: dict = None,        # {year: raw_value} — summary row pinned at top
     top_row_label: str = "",     # label for the top summary row
+    top_row_status: str = "",    # status tag for the top summary row
+    row_status: dict = None,     # {row_label: "(Est)"/"(USDA)"} shown right of name
 ) -> go.Figure:
     """
     Styled Plotly table with:
@@ -1984,15 +1986,35 @@ def build_heatmap_table(
             stats_pct_us.append("—"); bg_pct_us.append(_S); fg_pct_us.append(_M)
 
     # ── Build column arrays for Plotly (column-major) ─────────────────────────
-    hdr_vals = ["State / Region"] + [str(y) for y in years] + \
+    _has_status = bool(row_status or top_row_status)
+
+    hdr_vals = ["State / Region"]
+    if _has_status:
+        hdr_vals.append("")          # narrow status column, no header text
+    hdr_vals += [str(y) for y in years] + \
                ["% vs LY", f"Olympic Avg\n({unit})", "% of Avg",
                 "Min", "Max", "% of U.S."]
     hdr_bg   = [_P] * len(hdr_vals)
-    hdr_fg   = [_M] + [_T] * len(years) + [_M] * 6
+    hdr_fg   = [_M] + ([_M] if _has_status else []) + [_T] * len(years) + [_M] * 6
 
     # Row label column
     lbl_bg   = [(_BR if row_is_region[i] else _P) for i in range(n_rows)]
     lbl_fg   = [(_G  if row_is_region[i] else _T) for i in range(n_rows)]
+
+    # Status column (narrow, right-aligned, amber for Est / muted for USDA)
+    if _has_status:
+        # Build status value list from row_labels (before any rename)
+        def _status_tag(lbl, is_region_row):
+            if is_region_row and top_row_label and lbl == f"▶  {top_row_label}":
+                return top_row_status
+            return (row_status or {}).get(lbl, "")
+        status_vals = [_status_tag(row_labels[i], row_is_region[i]) for i in range(n_rows)]
+        status_bgs  = [lbl_bg[i] for i in range(n_rows)]
+        status_fgs  = [
+            "#f59e0b" if "(Est)" in (status_vals[i] or "")
+            else "#7a9990"
+            for i in range(n_rows)
+        ]
 
     # Year columns
     yr_cell_vals = [[_fmt_num(row_data[r][c]) for r in range(n_rows)]
@@ -2000,21 +2022,24 @@ def build_heatmap_table(
     yr_cell_bgs  = [[row_bg[r][c] for r in range(n_rows)] for c in range(len(years))]
     yr_cell_fgs  = [[row_fg[r][c] for r in range(n_rows)] for c in range(len(years))]
 
-    all_vals = ([row_labels]
+    _status_insert = ([status_vals], [status_bgs], [status_fgs]) if _has_status else ([], [], [])
+
+    all_vals = ([row_labels] + _status_insert[0]
                 + yr_cell_vals
                 + [stats_pct_vs_ly, stats_avg, stats_pct_avg,
                    stats_min, stats_max, stats_pct_us])
-    all_bgs  = ([lbl_bg]
+    all_bgs  = ([lbl_bg] + _status_insert[1]
                 + yr_cell_bgs
                 + [bg_pct_ly, [_S]*n_rows, bg_pct_avg,
                    [_S]*n_rows, [_S]*n_rows, bg_pct_us])
-    all_fgs  = ([lbl_fg]
+    all_fgs  = ([lbl_fg] + _status_insert[2]
                 + yr_cell_fgs
                 + [fg_pct_ly, [_T]*n_rows, fg_pct_avg,
                    [_T]*n_rows, [_A]*n_rows, fg_pct_us])
 
-    col_widths = [130] + [60]*len(years) + [70, 90, 70, 55, 55, 65]
+    col_widths = [130] + ([52] if _has_status else []) + [60]*len(years) + [70, 90, 70, 55, 55, 65]
 
+    _n_text_cols = 1 + (1 if _has_status else 0)
     fig = go.Figure(go.Table(
         columnwidth=col_widths,
         header=dict(
@@ -2028,7 +2053,8 @@ def build_heatmap_table(
             values=all_vals,
             fill_color=all_bgs,
             font=dict(color=all_fgs, size=11, family="Arial"),
-            align=["left"] + ["right"]*len(years) + ["right"]*6,
+            align=(["left"] + (["right"] if _has_status else [])
+                   + ["right"]*len(years) + ["right"]*6),
             height=24,
             line_color=_BR,
         ),
@@ -3086,22 +3112,20 @@ def main():
                                 _nd_est.get(dist, {}).get(c, {}).get(_latest_yr, False)
                                 for c in _nd_ctys.get(dist, {})
                             )
-                        # District table: rename keys to include status label
-                        _nd_yr_labeled = {
-                            f"{d} (Est)" if _dist_any_est(d) else f"{d} (USDA)": v
-                            for d, v in _nd_yr.items()
-                        }
-                        _nd_us_labeled = {  # keep us_totals keyed by year
-                            y: v for y, v in _nd_us.items()
+                        # District table: clean names + status passed separately
+                        _nd_row_status = {
+                            d: ("(Est)" if _dist_any_est(d) else "(USDA)")
+                            for d in _nd_yr
                         }
                         _nt_tbl_title = (f"{nass_state} {nass_crop} — {nass_metric} "
                                          f"by ASD District ({_nt_unit}) | "
                                          f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}")
                         _nt_fig = build_heatmap_table(
-                            _nd_yr_labeled, _HIST_YEARS, title=_nt_tbl_title,
+                            _nd_yr, _HIST_YEARS, title=_nt_tbl_title,
                             unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
-                            us_totals=_nd_us_labeled if not _nt_ratio else None,
+                            us_totals=_nd_us if not _nt_ratio else None,
                             regions=None, fmt=_nt_fmt,
+                            row_status=_nd_row_status,
                         )
 
                     else:
@@ -3169,27 +3193,26 @@ def main():
                                 expanded=False,
                             ):
                                 if _cty_data:
-                                    # Label each county (Est) or (USDA) by latest year
                                     _cty_est_map = _nd_est.get(_dist_name, {})
-                                    _cty_labeled = {
-                                        (f"{cn} (Est)" if _cty_est_map.get(cn, {}).get(_latest_yr, False)
-                                         else f"{cn} (USDA)"): yvals
-                                        for cn, yvals in _cty_data.items()
+                                    # Status per county (clean names, status separate)
+                                    _cty_row_status = {
+                                        cn: ("(Est)" if _cty_est_map.get(cn, {}).get(_latest_yr, False)
+                                             else "(USDA)")
+                                        for cn in _cty_data
                                     }
-                                    _dist_est = _dist_any_est(_dist_name)
-                                    _dist_top_lbl = (
-                                        f"{_dist_name} District Total "
-                                        f"{'(Est)' if _dist_est else '(USDA)'}"
-                                    )
+                                    _dist_est    = _dist_any_est(_dist_name)
+                                    _dist_status = "(Est)" if _dist_est else "(USDA)"
                                     _cty_fig = build_heatmap_table(
-                                        _cty_labeled, _HIST_YEARS,
+                                        _cty_data, _HIST_YEARS,
                                         title=(f"{_dist_name} — County Detail "
                                                f"({_nt_unit})"),
                                         unit=_nt_unit, divisor=_nt_div,
                                         is_ratio=_nt_ratio, regions=None,
                                         fmt=_nt_fmt,
                                         top_row=_nd_yr.get(_dist_name, {}),
-                                        top_row_label=_dist_top_lbl,
+                                        top_row_label=f"{_dist_name} District Total",
+                                        top_row_status=_dist_status,
+                                        row_status=_cty_row_status,
                                     )
                                     st.plotly_chart(
                                         _cty_fig, use_container_width=True,
