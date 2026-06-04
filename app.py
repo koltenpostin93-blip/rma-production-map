@@ -553,10 +553,10 @@ def _build_adj(state_fips: str, cache_ver: str, _geo: dict) -> dict:
 
 @st.cache_data(show_spinner=False)
 def get_completed_county_production(crop: str, state: str, year: int,
-                                    cache_ver: str, _geo: dict) -> pd.DataFrame:
+                                    cache_ver: str) -> pd.DataFrame:
     """
     Returns county-level production for the state with missing counties filled
-    in using Tier-2 neighbor-weighted estimation.
+    in using Tier-1 district-multiplier estimation.
 
     Columns: fips, County, District, DistrictCode, Production, is_estimated
     named + estimated sums = official state total exactly.
@@ -612,32 +612,14 @@ def get_completed_county_production(crop: str, state: str, year: int,
     dist_ratio = named_r.dropna(subset=["ratio"]).groupby("District")["ratio"].mean().to_dict()
     state_ratio = float(np.mean(list(dev.values()))) if dev else 1.0
 
-    # ── Tier-2 neighbor-weighted multiplier ───────────────────────────────
-    sfips = STATE_FIPS_ALL.get(state, "")
-    adj   = _build_adj(sfips, cache_ver, _geo)
-
-    mults = []
-    for _, row in missing.iterrows():
-        fips = row["fips"]
-        visited, frontier = {fips}, {fips}
-        hop_ratios = []
-        for hop in range(1, 3):
-            nf = set()
-            for f in frontier:
-                for nb in adj.get(f, []):
-                    if nb not in visited:
-                        visited.add(nb); nf.add(nb)
-                        if nb in dev:
-                            hop_ratios.append((dev[nb], 1.0 / hop))
-            frontier = nf
-        if hop_ratios:
-            tw = sum(w for _, w in hop_ratios)
-            mults.append(sum(r * w for r, w in hop_ratios) / tw)
-        else:
-            mults.append(dist_ratio.get(row.get("District", ""), state_ratio))
-
+    # ── Tier-1 district multiplier ────────────────────────────────────────
+    # Each missing county is adjusted by the average deviation of reported
+    # counties in the same ASD district. Falls back to state average.
     missing = missing.copy()
-    missing["raw_est"] = missing["hist_share"] * state_total * pd.Series(mults, index=missing.index)
+    missing["mult"]    = missing["District"].map(
+        lambda d: dist_ratio.get(d, state_ratio)
+    )
+    missing["raw_est"] = missing["hist_share"] * state_total * missing["mult"]
 
     # ── Scale to reconcile with OTHER COUNTIES ────────────────────────────
     raw_sum = missing["raw_est"].sum()
@@ -738,7 +720,7 @@ def get_nass_district_view_data(crop: str, year: int, metric: str,
 
     def _load_state(yr, use_estimation=False):
         if use_estimation:
-            df = get_completed_county_production(crop, state, yr, _CACHE_VERSION, _geo)
+            df = get_completed_county_production(crop, state, yr, _CACHE_VERSION)
             if df.empty:
                 return pd.DataFrame(columns=["fips", "Value"])
             df = df.rename(columns={"Production": "Value"})
@@ -2058,7 +2040,7 @@ def main():
                         # Estimated county count badge (production only)
                         if nass_metric == "Production (bu)":
                             _comp_data = get_completed_county_production(
-                                nass_crop, nass_state, nass_year, _CACHE_VERSION, geo
+                                nass_crop, nass_state, nass_year, _CACHE_VERSION
                             )
                             _n_est = int(_comp_data["is_estimated"].sum()) if not _comp_data.empty else 0
                         else:
