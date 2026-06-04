@@ -863,9 +863,9 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
 
         # Label line 1: district name
         # Label line 2: metric value (always)
-        # Add ⚑ marker to districts with estimated counties
+        # Add "Est" marker to districts with estimated counties
         _est_flag = (
-            " ⚑" if (estimated_districts and _dn in estimated_districts) else ""
+            " (Est)" if (estimated_districts and _dn in estimated_districts) else ""
         )
         if change_view != "Current Year" and _dv is not None:
             _sign = "+" if _dv >= 0 else ""
@@ -2103,15 +2103,15 @@ def main():
                                     .groupby("District")["is_estimated"]
                                     .count()
                                     .reset_index()
-                                    .rename(columns={"is_estimated": "Est. Cty ⚑"})
+                                    .rename(columns={"is_estimated": "Est. Counties"})
                                 )
                                 _dt = _dt.merge(_est_by_dist, on="District", how="left")
-                                _dt["Est. Cty ⚑"] = _dt["Est. Cty ⚑"].fillna(0).astype(int)
-                                _dt["Est. Cty ⚑"] = _dt["Est. Cty ⚑"].apply(
+                                _dt["Est. Counties"] = _dt["Est. Counties"].fillna(0).astype(int)
+                                _dt["Est. Counties"] = _dt["Est. Counties"].apply(
                                     lambda n: str(n) if n > 0 else "—"
                                 )
                                 _tbl_cols = ["District", "ASD", nass_metric,
-                                             "% of State", "Est. Cty ⚑"]
+                                             "% of State", "Est. Counties"]
                             else:
                                 _tbl_cols = ["District", "ASD", nass_metric, "% of State"]
 
@@ -2130,10 +2130,11 @@ def main():
                                 )
                                 if _n_est > 0:
                                     st.caption(
-                                        f"⚑ = includes estimated counties. "
-                                        f"Production for unreported counties is estimated "
-                                        f"using historical district-share averages and "
-                                        f"scaled to match the NASS 'Other Counties' figure."
+                                        "Est = Some counties not yet final. Production is "
+                                        "estimated using each county's historical share of "
+                                        "state output, adjusted for current district "
+                                        "performance, and scaled to reconcile with the "
+                                        "NASS state total."
                                     )
                                 _km1, _km2 = st.columns(2)
                                 _km1.metric(
