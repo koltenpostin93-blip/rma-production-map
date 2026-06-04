@@ -35,13 +35,14 @@ _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % repor
 
 # Metrics available in the NASS tab
 NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres",
-                    "Yield (bu/ac)", "Prevent Plant Acres"]
+                    "% Harvested", "Yield (bu/ac)", "Prevent Plant Acres"]
 NASS_CHANGE_OPTS = ["Current Year", "vs Prior Year", "vs Selected Year", "vs 3-Yr Avg"]
 
 _METRIC_TO_STAT = {
     "Production (bu)":    "production",
     "Planted Acres":      "planted",
     "Harvested Acres":    "harvested",
+    "% Harvested":        "pct_harvested",   # derived: harvested / planted * 100
     "Yield (bu/ac)":      "yield",
     "Prevent Plant Acres": "prevent_plant",
 }
@@ -745,7 +746,7 @@ def get_nass_district_view_data(crop: str, year: int, metric: str,
         return df.dropna(subset=["District"])
 
     def _agg(df):
-        if metric == "Yield (bu/ac)":
+        if metric in ("Yield (bu/ac)", "% Harvested"):
             return df.groupby("District")["Value"].mean()
         return df.groupby("District")["Value"].sum()
 
@@ -1119,6 +1120,12 @@ def _nass_view_cfg(metric: str, change_view: str) -> dict:
             "label_fn": format_nass_yield_label,
             "rank_unit": "bu/ac", "rank_div": 1, "rank_fmt": ".1f",
         },
+        "% Harvested": {
+            "cscale": "RdYlGn", "diverging": False, "clabel": "% Harvested",
+            "hover_fmt": ":.1f", "hover_sfx": "%", "label_unit": "%",
+            "label_fn": format_nass_yield_label,
+            "rank_unit": "%", "rank_div": 1, "rank_fmt": ".1f",
+        },
         "Prevent Plant Acres": {
             "cscale": "OrRd", "diverging": False, "clabel": "Prevent<br>Plant Acres",
             "hover_fmt": ":,.0f", "hover_sfx": " ac", "label_unit": "K ac",
@@ -1127,6 +1134,29 @@ def _nass_view_cfg(metric: str, change_view: str) -> dict:
         },
     }
     return _abs_cfgs[metric]
+
+
+@st.cache_data(show_spinner=False)
+def load_nass_state_pct_harvested(crop: str, year: int,
+                                   cache_ver: str) -> pd.DataFrame:
+    """State-level % harvested = harvested / planted × 100. Returns [State, Value]."""
+    planted   = load_nass_state(crop, year, "planted",   cache_ver)
+    harvested = load_nass_state(crop, year, "harvested", cache_ver)
+    if planted.empty or harvested.empty:
+        return pd.DataFrame(columns=["State", "Value"])
+    merged = planted.merge(
+        harvested.rename(columns={"Value": "Harv"}), on="State", how="inner"
+    )
+    merged["Value"] = (merged["Harv"] / merged["Value"].replace(0, np.nan) * 100).round(2)
+    return merged[["State", "Value"]].dropna(subset=["Value"])
+
+
+def _load_state_for_stat(crop: str, year: int, stat_type: str,
+                          cache_ver: str) -> pd.DataFrame:
+    """Wrapper that handles pct_harvested on top of load_nass_state."""
+    if stat_type == "pct_harvested":
+        return load_nass_state_pct_harvested(crop, year, cache_ver)
+    return load_nass_state(crop, year, stat_type, cache_ver)
 
 
 def _state_pct_change(cur_df: pd.DataFrame, cmp_df: pd.DataFrame) -> pd.DataFrame:
@@ -1150,11 +1180,21 @@ def _state_pct_change_avg(cur_df: pd.DataFrame, frames: list) -> pd.DataFrame:
 
 def _load_for_metric(crop: str, year: int, stat_type: str) -> pd.DataFrame:
     """Return [State, County, fips, Value] for any stat type.
-    Production is routed through load_nass_county (its own validated API call)
-    to guarantee correct figures; all other stats go through load_nass_stat.
+    Production → load_nass_county; pct_harvested → derived; all others → load_nass_stat.
     """
     if stat_type == "production":
         return load_nass_county(crop, year, _CACHE_VERSION).rename(columns={"Production": "Value"})
+    if stat_type == "pct_harvested":
+        planted   = load_nass_stat(crop, year, "planted",   _CACHE_VERSION)
+        harvested = load_nass_stat(crop, year, "harvested", _CACHE_VERSION)
+        if planted.empty or harvested.empty:
+            return pd.DataFrame(columns=["State", "County", "fips", "Value"])
+        merged = planted.merge(
+            harvested[["fips", "Value"]].rename(columns={"Value": "Harv"}),
+            on="fips", how="inner",
+        )
+        merged["Value"] = merged["Harv"] / merged["Value"].replace(0, np.nan) * 100
+        return merged[["State", "County", "fips", "Value"]].dropna(subset=["Value"])
     return load_nass_stat(crop, year, stat_type, _CACHE_VERSION)
 
 
@@ -1169,12 +1209,12 @@ def get_nass_view_data(crop: str, year: int, metric: str, change_view: str, comp
     df_cur    = _load_for_metric(crop, year, stat_type)
 
     def _agg_c(df):
-        if metric == "Yield (bu/ac)":
+        if metric in ("Yield (bu/ac)", "% Harvested"):
             return df.groupby(["State", "County"])["Value"].mean().reset_index()
         return df.groupby(["State", "County"])["Value"].sum().reset_index()
 
     def _agg_s(df):
-        if metric == "Yield (bu/ac)":
+        if metric in ("Yield (bu/ac)", "% Harvested"):
             return df.groupby("State")["Value"].mean().reset_index()
         return df.groupby("State")["Value"].sum().reset_index()
 
@@ -1990,38 +2030,38 @@ def main():
             # Pre-warm comparison years for county and state data
             if nass_change == "vs Prior Year":
                 _load_for_metric(nass_crop, nass_year - 1, stat_type)
-                load_nass_state(nass_crop, nass_year - 1, stat_type, _CACHE_VERSION)
+                _load_state_for_stat(nass_crop, nass_year - 1, stat_type, _CACHE_VERSION)
             elif nass_change == "vs Selected Year" and nass_comp_yr:
                 _load_for_metric(nass_crop, nass_comp_yr, stat_type)
-                load_nass_state(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION)
+                _load_state_for_stat(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION)
             elif nass_change == "vs 3-Yr Avg":
                 for _y in [nass_year - 1, nass_year - 2, nass_year - 3]:
                     if _y >= 2015:
                         _load_for_metric(nass_crop, _y, stat_type)
-                        load_nass_state(nass_crop, _y, stat_type, _CACHE_VERSION)
+                        _load_state_for_stat(nass_crop, _y, stat_type, _CACHE_VERSION)
             # County-level data for the county map
             county_vdf, _ = get_nass_view_data(
                 nass_crop, nass_year, nass_metric, nass_change, nass_comp_yr
             )
             # Official state-level data for the state choropleth map
-            _st_cur = load_nass_state(nass_crop, nass_year, stat_type, _CACHE_VERSION)
+            _st_cur = _load_state_for_stat(nass_crop, nass_year, stat_type, _CACHE_VERSION)
             if nass_change == "Current Year" or _st_cur.empty:
                 state_vdf = _st_cur
             elif nass_change == "vs Prior Year":
                 state_vdf = _state_pct_change(
                     _st_cur,
-                    load_nass_state(nass_crop, nass_year - 1, stat_type, _CACHE_VERSION),
+                    _load_state_for_stat(nass_crop, nass_year - 1, stat_type, _CACHE_VERSION),
                 )
             elif nass_change == "vs Selected Year" and nass_comp_yr:
                 state_vdf = _state_pct_change(
                     _st_cur,
-                    load_nass_state(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION),
+                    _load_state_for_stat(nass_crop, nass_comp_yr, stat_type, _CACHE_VERSION),
                 )
             else:  # vs 3-Yr Avg
                 _sy = [y for y in [nass_year - 1, nass_year - 2, nass_year - 3] if y >= 2015]
                 state_vdf = _state_pct_change_avg(
                     _st_cur,
-                    [load_nass_state(nass_crop, y, stat_type, _CACHE_VERSION) for y in _sy],
+                    [_load_state_for_stat(nass_crop, y, stat_type, _CACHE_VERSION) for y in _sy],
                 )
 
         if nass_df.empty:
@@ -2069,9 +2109,11 @@ def main():
 
             def _official_kpi_str(df_state):
                 """Format the official KPI value from state-level NASS data."""
-                if nass_metric == "Yield (bu/ac)":
+                if nass_metric in ("Yield (bu/ac)", "% Harvested"):
                     v = df_state["Value"].mean()
-                    return f"{v:.1f} bu/ac" if not pd.isna(v) else "—"
+                    if pd.isna(v):
+                        return "—"
+                    return f"{v:.1f} bu/ac" if nass_metric == "Yield (bu/ac)" else f"{v:.1f}%"
                 if nass_metric in ("Planted Acres", "Harvested Acres", "Prevent Plant Acres"):
                     v = df_state["Value"].sum()
                     return f"{v/1e6:.1f}M ac"
@@ -2369,12 +2411,14 @@ def main():
 
                     # Rolling 6-year window ending at the selected year
                     _HIST_YEARS = list(range(nass_year - 5, nass_year + 1))
-                    _HIST_STATTYPES = ["planted", "harvested", "yield", "production"]
+                    _HIST_STATTYPES = ["planted", "harvested", "pct_harvested",
+                                       "yield", "production"]
                     _HIST_ROW_LBL   = {
-                        "planted":    "Planted Acres (000 ac)",
-                        "harvested":  "Harvested Acres (000 ac)",
-                        "yield":      "Yield (bu/ac)",
-                        "production": "Production (M bu)",
+                        "planted":        "Planted Acres (000 ac)",
+                        "harvested":      "Harvested Acres (000 ac)",
+                        "pct_harvested":  "% Harvested",
+                        "yield":          "Yield (bu/ac)",
+                        "production":     "Production (M bu)",
                     }
 
                     with st.spinner("Loading historical data…"):
@@ -2386,7 +2430,7 @@ def main():
                                 try:
                                     if _htbl_scope == "State":
                                         # Official state totals from state-level API
-                                        _hdf = load_nass_state(
+                                        _hdf = _load_state_for_stat(
                                             nass_crop, _hyr, _hst, _CACHE_VERSION
                                         )
                                         _hdf_s = (
@@ -2400,27 +2444,47 @@ def main():
                                         )
                                     elif (_htbl_scope == "ASD District"
                                           and _htbl_dist
-                                          and _hst in ("production","planted","harvested","yield")):
+                                          and _hst in ("production","planted","harvested",
+                                                        "pct_harvested","yield")):
                                         # Use Tier-1 estimated county data for all metrics
-                                        _comp_yr = get_completed_county_data(
-                                            nass_crop, nass_state, _hyr, _hst, _CACHE_VERSION
-                                        )
-                                        if _comp_yr.empty:
-                                            _hist[_hyr][_hst] = None
-                                            continue
-                                        _comp_dist = _comp_yr[
-                                            _comp_yr["District"] == _htbl_dist
-                                        ]
-                                        if _comp_dist.empty:
-                                            _hist[_hyr][_hst] = None
-                                        else:
-                                            _hist[_hyr][_hst] = float(
-                                                _comp_dist["Value"].mean()
-                                                if _hst == "yield"
-                                                else _comp_dist["Value"].sum()
+                                        if _hst == "pct_harvested":
+                                            # Derive from completed planted + harvested
+                                            _plt_yr = get_completed_county_data(
+                                                nass_crop, nass_state, _hyr, "planted", _CACHE_VERSION
                                             )
-                                            if _comp_dist["is_estimated"].any():
-                                                _tbl_est_years.add(_hyr)
+                                            _hv_yr  = get_completed_county_data(
+                                                nass_crop, nass_state, _hyr, "harvested", _CACHE_VERSION
+                                            )
+                                            _plt_d  = _plt_yr[_plt_yr["District"] == _htbl_dist] if not _plt_yr.empty else pd.DataFrame()
+                                            _hv_d   = _hv_yr[_hv_yr["District"] == _htbl_dist]  if not _hv_yr.empty  else pd.DataFrame()
+                                            if _plt_d.empty or _hv_d.empty or _plt_d["Value"].sum() == 0:
+                                                _hist[_hyr][_hst] = None
+                                            else:
+                                                _hist[_hyr][_hst] = float(
+                                                    _hv_d["Value"].sum() / _plt_d["Value"].sum() * 100
+                                                )
+                                                if _plt_d["is_estimated"].any() or _hv_d["is_estimated"].any():
+                                                    _tbl_est_years.add(_hyr)
+                                        else:
+                                            _comp_yr = get_completed_county_data(
+                                                nass_crop, nass_state, _hyr, _hst, _CACHE_VERSION
+                                            )
+                                            if _comp_yr.empty:
+                                                _hist[_hyr][_hst] = None
+                                                continue
+                                            _comp_dist = _comp_yr[
+                                                _comp_yr["District"] == _htbl_dist
+                                            ]
+                                            if _comp_dist.empty:
+                                                _hist[_hyr][_hst] = None
+                                            else:
+                                                _hist[_hyr][_hst] = float(
+                                                    _comp_dist["Value"].mean()
+                                                    if _hst == "yield"
+                                                    else _comp_dist["Value"].sum()
+                                                )
+                                                if _comp_dist["is_estimated"].any():
+                                                    _tbl_est_years.add(_hyr)
                                     else:
                                         # County-level data filtered to district or county
                                         _hdf = _load_for_metric(
@@ -2449,9 +2513,10 @@ def main():
                     def _hfmt(stype, v):
                         if v is None or (isinstance(v, float) and np.isnan(v)):
                             return "—"
-                        if stype == "production":   return f"{v/1e6:,.0f}"
+                        if stype == "production":      return f"{v/1e6:,.0f}"
                         if stype in ("planted","harvested"): return f"{v/1e3:,.0f}"
-                        if stype == "yield":        return f"{v:.1f}"
+                        if stype == "pct_harvested":   return f"{v:.1f}%"
+                        if stype == "yield":           return f"{v:.1f}"
                         return f"{v:,.0f}"
 
                     def _hdelta_str(v):
