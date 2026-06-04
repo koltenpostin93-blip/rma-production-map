@@ -3038,21 +3038,30 @@ def main():
                             us_totals=_nt_us_tot if not _nt_ratio else None, fmt=_nt_fmt,
                         )
 
-                    elif _htbl_scope == "ASD District" and _htbl_dist:
-                        # District × year heatmap for the selected state
+                    elif _htbl_scope == "ASD District":
+                        # District × year heatmap + per-district county expanders
                         with st.spinner("Building district table…"):
-                            _nd_yr: dict = {}
-                            _nd_us:  dict = {}
+                            _nd_yr:   dict = {}   # {district: {year: value}}
+                            _nd_us:   dict = {}   # {year: state total}
+                            _nd_ctys: dict = {}   # {district: {county: {year: value}}}
                             for _ny in _HIST_YEARS:
                                 _cddf = get_completed_county_data(
                                     nass_crop, nass_state, _ny, _nt_stat, _CACHE_VERSION
                                 )
                                 if not _cddf.empty and "District" in _cddf.columns:
-                                    _agg_fn = (lambda g: g["Value"].mean()
-                                               if _nt_ratio else g["Value"].sum())
                                     for dist, grp in _cddf.groupby("District"):
-                                        if dist not in _nd_yr: _nd_yr[dist] = {}
-                                        _nd_yr[dist][_ny] = float(_agg_fn(grp))
+                                        if dist not in _nd_yr:  _nd_yr[dist]   = {}
+                                        if dist not in _nd_ctys: _nd_ctys[dist] = {}
+                                        _nd_yr[dist][_ny] = float(
+                                            grp["Value"].mean() if _nt_ratio else grp["Value"].sum()
+                                        )
+                                        # Capture county-level rows for expanders
+                                        for _, _crow in grp.iterrows():
+                                            _cn = _crow.get("County", "")
+                                            if _cn:
+                                                if _cn not in _nd_ctys[dist]: _nd_ctys[dist][_cn] = {}
+                                                _cv = _crow.get("Value")
+                                                _nd_ctys[dist][_cn][_ny] = float(_cv) if pd.notna(_cv) and _cv else None
                                     _nd_us[_ny] = float(
                                         _cddf["Value"].mean() if _nt_ratio else _cddf["Value"].sum()
                                     )
@@ -3096,43 +3105,31 @@ def main():
                         "Olympic Avg drops single highest and lowest year."
                     )
 
-                    # ── ASD county lookup dropdown ─────────────────────────────
-                    if _htbl_scope == "ASD District":
-                        # Build district → sorted county list from fips_map + GeoJSON
-                        _sfips_val = STATE_FIPS_ALL.get(nass_state, "")
-                        _fips_to_name = {
-                            f["properties"]["STATE"] + f["properties"]["COUNTY"]:
-                            f["properties"]["NAME"]
-                            for f in geo["features"]
-                            if f["properties"]["STATE"] == _sfips_val
-                        }
-                        _dist_county_map: dict = {}
-                        for _fips, (_dname, _dcode) in _fips_map.items():
-                            if not _dname or not _fips.startswith(_sfips_val):
-                                continue
-                            _cname = _fips_to_name.get(_fips, _fips)
-                            _dist_county_map.setdefault(_dname, []).append(_cname)
-                        for _d in _dist_county_map:
-                            _dist_county_map[_d] = sorted(set(_dist_county_map[_d]))
-
-                        if _dist_county_map:
-                            _sel_asd = st.selectbox(
-                                "View counties in district",
-                                sorted(_dist_county_map.keys()),
-                                key="nass_asd_county_drp",
-                            )
-                            if _sel_asd:
-                                _cnty_list = _dist_county_map.get(_sel_asd, [])
-                                st.markdown(
-                                    f"<p style='color:{MUTED};font-size:0.82rem;"
-                                    f"margin:4px 0 2px 0;'>"
-                                    f"<b style='color:{TEXT};'>{_sel_asd}</b> — "
-                                    f"{len(_cnty_list)} counties</p>"
-                                    f"<p style='color:{TEXT};font-size:0.84rem;"
-                                    f"margin:0;'>"
-                                    + "  ·  ".join(_cnty_list) + "</p>",
-                                    unsafe_allow_html=True,
-                                )
+                    # ── ASD county drill-down expanders ───────────────────────
+                    if _htbl_scope == "ASD District" and "_nd_ctys" in dir():
+                        for _dist_name in sorted(_nd_ctys.keys()):
+                            _cty_data = _nd_ctys[_dist_name]
+                            _n_cty    = len(_cty_data)
+                            with st.expander(
+                                f"📍 {_dist_name} — {_n_cty} counties",
+                                expanded=False,
+                            ):
+                                if _cty_data:
+                                    _cty_fig = build_heatmap_table(
+                                        _cty_data, _HIST_YEARS,
+                                        title=(f"{_dist_name} — County Detail "
+                                               f"({_nt_unit})"),
+                                        unit=_nt_unit, divisor=_nt_div,
+                                        is_ratio=_nt_ratio, regions=None,
+                                        fmt=_nt_fmt,
+                                    )
+                                    st.plotly_chart(
+                                        _cty_fig, use_container_width=True,
+                                        key=f"cty_tbl_{_dist_name}",
+                                        config={"displayModeBar": False},
+                                    )
+                                else:
+                                    st.info("No county data available for this district.")
 
                     # Per-state detail (ASD District / County) in expander
                     with st.expander(
