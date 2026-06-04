@@ -1783,6 +1783,252 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
     return fig
 
 
+NASS_REGIONAL_GROUPS = {
+    "Eastern Corn Belt": ["IL", "IN", "OH", "MI", "KY"],
+    "Upper Plains":      ["IA", "NE", "KS"],
+    "N. Border States":  ["MN", "SD", "ND"],
+    "Delta":             ["MS", "AR", "LA", "TN"],
+    "Other":             ["WI", "MO", "TX", "CO", "MT", "WY", "OK", "VA", "PA"],
+}
+
+def _row_bg_text(rank: int, n: int):
+    """Return (bg_hex, text_hex) for a value at given rank in a row of n."""
+    if n == 0: return "#1e2e2a", "#e4e8f0"
+    p = rank / max(n - 1, 1)
+    if   rank == 0:         return "#7f1d1d", "#fca5a5"
+    elif rank == 1:         return "#991b1b", "#fca5a5"
+    elif rank == n - 1:     return "#14532d", "#4ade80"
+    elif rank == n - 2:     return "#166534", "#4ade80"
+    elif p < 0.35:          return "#2d1515", "#e4e8f0"
+    elif p > 0.65:          return "#153b1e", "#e4e8f0"
+    else:                   return "#1e2e2a", "#e4e8f0"
+
+
+def build_heatmap_table(
+    state_year_data: dict,   # {state_alpha: {year: float_or_None}}
+    years: list,             # sorted list of years to show
+    title: str,
+    unit: str = "M bu",      # shown in column header
+    divisor: float = 1e6,    # raw → display (1 if already display units)
+    is_ratio: bool = False,  # True for %, yield — use mean for region totals
+    us_totals: dict = None,  # {year: raw_us_total} for % of US column
+    regions: dict = None,    # use NASS_REGIONAL_GROUPS if None
+    fmt: str = ",.0f",
+) -> go.Figure:
+    """
+    Styled Plotly table with:
+      • Per-row heat-map (top 2 = green, bottom 2 = red, gradient between)
+      • Regional subtotal rows
+      • Stats: % vs LY · Olympic Avg · % of Avg · Min · Max · % of US
+    """
+    _D  = "#0e1614"; _P = "#162019"; _S = "#1e2e2a"
+    _BR = "#243328"; _T = "#e4e8f0"; _M = "#7a9990"
+    _A  = "#4ade80"; _G = "#f59e0b"
+
+    def _disp(v):
+        if v is None or (isinstance(v, float) and np.isnan(v)): return None
+        return v / divisor
+
+    def _fmt_num(v):
+        if v is None: return "—"
+        return f"{v:{fmt}}"
+
+    def _fmt_pct(v, arrow=True):
+        if v is None: return "—"
+        sign = "▲" if v >= 0 else "▼"
+        return f"{sign} {abs(v):.1f}%" if arrow else f"{v:.1f}%"
+
+    def _olympic(vals):
+        c = [v for v in vals if v is not None]
+        if len(c) >= 4: c = sorted(c)[1:-1]
+        return sum(c)/len(c) if c else None
+
+    def _row_colors(vals):
+        """Return lists of (bg, fg) per cell based on within-row rank."""
+        valid = [(i, v) for i, v in enumerate(vals) if v is not None]
+        n = len(valid)
+        rank_of = {idx: rank for rank, (idx, _) in enumerate(sorted(valid, key=lambda x: x[1]))}
+        bgs, fgs = [], []
+        for i, v in enumerate(vals):
+            if i not in rank_of: bgs.append(_S); fgs.append(_M)
+            else:
+                bg, fg = _row_bg_text(rank_of[i], n)
+                bgs.append(bg); fgs.append(fg)
+        return bgs, fgs
+
+    # ── Build rows ────────────────────────────────────────────────────────────
+    if regions is None:
+        regions = NASS_REGIONAL_GROUPS
+
+    # Collect what states we actually have data for
+    have_states = set(state_year_data.keys())
+
+    row_labels, row_data, row_bg, row_fg, row_is_region = [], [], [], [], []
+    seen = set()
+
+    for region_name, members in regions.items():
+        region_members = [s for s in members if s in have_states]
+        if not region_members:
+            continue
+        # Individual state rows
+        for st in region_members:
+            seen.add(st)
+            vals = [_disp(state_year_data[st].get(y)) for y in years]
+            bgs, fgs = _row_colors(vals)
+            row_labels.append(st)
+            row_data.append(vals)
+            row_bg.append(bgs); row_fg.append(fgs)
+            row_is_region.append(False)
+        # Region subtotal row
+        r_vals = []
+        for y in years:
+            yr_raw = [state_year_data[s].get(y) for s in region_members
+                      if state_year_data[s].get(y) is not None]
+            if yr_raw:
+                r_vals.append((np.mean(yr_raw) if is_ratio else sum(yr_raw)) / divisor)
+            else:
+                r_vals.append(None)
+        row_labels.append(region_name)
+        row_data.append(r_vals)
+        row_bg.append([_BR] * len(years))
+        row_fg.append([_G] * len(years))
+        row_is_region.append(True)
+
+    # Remaining states not in any region
+    for st in sorted(have_states - seen):
+        vals = [_disp(state_year_data[st].get(y)) for y in years]
+        bgs, fgs = _row_colors(vals)
+        row_labels.append(st)
+        row_data.append(vals)
+        row_bg.append(bgs); row_fg.append(fgs)
+        row_is_region.append(False)
+
+    # US Total row
+    if us_totals:
+        us_vals = [_disp(us_totals.get(y)) for y in years]
+        bgs, fgs = _row_colors(us_vals)
+        row_labels.append("US Total")
+        row_data.append(us_vals)
+        row_bg.append(bgs); row_fg.append(fgs)
+        row_is_region.append(True)
+
+    n_rows = len(row_labels)
+
+    # ── Compute stats columns ─────────────────────────────────────────────────
+    latest_yr = years[-1]
+    prev_yr   = years[-2] if len(years) >= 2 else None
+
+    stats_pct_vs_ly, stats_avg, stats_pct_avg = [], [], []
+    stats_min, stats_max, stats_pct_us = [], [], []
+    bg_pct_ly, fg_pct_ly = [], []
+    bg_pct_avg, fg_pct_avg = [], []
+    bg_pct_us, fg_pct_us = [], []
+
+    for i, (label, vals) in enumerate(zip(row_labels, row_data)):
+        is_reg = row_is_region[i]
+        clean  = [v for v in vals if v is not None]
+
+        # % vs LY
+        cur  = vals[years.index(latest_yr)] if latest_yr in years else None
+        prev = vals[years.index(prev_yr)]   if prev_yr and prev_yr in years else None
+        if cur and prev and prev != 0:
+            p = (cur - prev) / abs(prev) * 100
+            stats_pct_vs_ly.append(_fmt_pct(p))
+            c = "#166534" if p >= 0 else "#991b1b"
+            bg_pct_ly.append(c); fg_pct_ly.append(_A if p >= 0 else "#fca5a5")
+        else:
+            stats_pct_vs_ly.append("—")
+            bg_pct_ly.append(_S); fg_pct_ly.append(_M)
+
+        # Olympic Avg
+        avg = _olympic(clean)
+        stats_avg.append(_fmt_num(avg))
+
+        # % of Avg
+        if cur and avg and avg != 0:
+            pa = (cur - avg) / abs(avg) * 100
+            stats_pct_avg.append(_fmt_pct(pa))
+            c = "#166534" if pa >= 0 else "#991b1b"
+            bg_pct_avg.append(c); fg_pct_avg.append(_A if pa >= 0 else "#fca5a5")
+        else:
+            stats_pct_avg.append("—")
+            bg_pct_avg.append(_S); fg_pct_avg.append(_M)
+
+        # Min / Max
+        stats_min.append(_fmt_num(min(clean)) if clean else "—")
+        stats_max.append(_fmt_num(max(clean)) if clean else "—")
+
+        # % of US
+        if not is_ratio and us_totals and cur:
+            us_d = _disp(us_totals.get(latest_yr))
+            if us_d and us_d > 0:
+                pu = cur / us_d * 100
+                stats_pct_us.append(f"{pu:.1f}%")
+                bg_pct_us.append(_S); fg_pct_us.append(_G)
+            else:
+                stats_pct_us.append("—"); bg_pct_us.append(_S); fg_pct_us.append(_M)
+        else:
+            stats_pct_us.append("—"); bg_pct_us.append(_S); fg_pct_us.append(_M)
+
+    # ── Build column arrays for Plotly (column-major) ─────────────────────────
+    hdr_vals = ["State / Region"] + [str(y) for y in years] + \
+               ["% vs LY", f"Olympic Avg\n({unit})", "% of Avg",
+                "Min", "Max", "% of U.S."]
+    hdr_bg   = [_P] * len(hdr_vals)
+    hdr_fg   = [_M] + [_T] * len(years) + [_M] * 6
+
+    # Row label column
+    lbl_bg   = [(_BR if row_is_region[i] else _P) for i in range(n_rows)]
+    lbl_fg   = [(_G  if row_is_region[i] else _T) for i in range(n_rows)]
+
+    # Year columns
+    yr_cell_vals = [[_fmt_num(row_data[r][c]) for r in range(n_rows)]
+                    for c in range(len(years))]
+    yr_cell_bgs  = [[row_bg[r][c] for r in range(n_rows)] for c in range(len(years))]
+    yr_cell_fgs  = [[row_fg[r][c] for r in range(n_rows)] for c in range(len(years))]
+
+    all_vals = ([row_labels]
+                + yr_cell_vals
+                + [stats_pct_vs_ly, stats_avg, stats_pct_avg,
+                   stats_min, stats_max, stats_pct_us])
+    all_bgs  = ([lbl_bg]
+                + yr_cell_bgs
+                + [bg_pct_ly, [_S]*n_rows, bg_pct_avg,
+                   [_S]*n_rows, [_S]*n_rows, bg_pct_us])
+    all_fgs  = ([lbl_fg]
+                + yr_cell_fgs
+                + [fg_pct_ly, [_T]*n_rows, fg_pct_avg,
+                   [_T]*n_rows, [_A]*n_rows, fg_pct_us])
+
+    col_widths = [130] + [60]*len(years) + [70, 90, 70, 55, 55, 65]
+
+    fig = go.Figure(go.Table(
+        columnwidth=col_widths,
+        header=dict(
+            values=hdr_vals,
+            fill_color=hdr_bg,
+            font=dict(color=hdr_fg, size=11, family="Arial"),
+            align="center", height=28,
+            line_color=_BR,
+        ),
+        cells=dict(
+            values=all_vals,
+            fill_color=all_bgs,
+            font=dict(color=all_fgs, size=11, family="Arial"),
+            align=["left"] + ["right"]*len(years) + ["right"]*6,
+            height=24,
+            line_color=_BR,
+        ),
+    ))
+    fig.update_layout(
+        paper_bgcolor=_D,
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=max(300, n_rows * 26 + 60),
+        title=dict(text=title, font=dict(color="#4ade80", size=13)),
+    )
+    return fig
+
+
 def build_history_bar(series_dict: dict, years: list, title: str,
                        y_label: str = "", stacked: bool = False) -> go.Figure:
     """
@@ -2536,7 +2782,7 @@ def main():
                     st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                                 unsafe_allow_html=True)
 
-                    # ── Historical Summary Table ───────────────────────────────
+                    # ── National Heatmap Table (all states × years) ───────────
                     _state_full = ABBR_TO_NAME.get(nass_state, nass_state)
 
                     # Scope selector: State (default), ASD District, or County
@@ -2729,46 +2975,97 @@ def main():
                                     if _hc and _hbase and _hyr != nass_comp_yr else None
                                 )
 
-                    _htbl_rows = []
-                    for _hst in _HIST_STATTYPES:
-                        _hrow = {"": _HIST_ROW_LBL[_hst]}
-                        for _hyr in _HIST_YEARS:
-                            _raw_s = _hfmt(_hst, _hist[_hyr].get(_hst))
-                            _dlt_s = (
-                                _hdelta_str(_hdelta[_hyr].get(_hst))
-                                if nass_change != "Current Year" else ""
+                    # Build national all-states heatmap table
+                    _nt_stat  = _METRIC_TO_STAT.get(nass_metric, "production")
+                    _nt_ratio = nass_metric in ("Yield (bu/ac)", "% Harvested")
+                    _nt_units = {
+                        "Production (bu)":"B bu","Planted Acres":"M ac",
+                        "Harvested Acres":"M ac","% Harvested":"%",
+                        "Yield (bu/ac)":"bu/ac","Prevent Plant Acres":"M ac",
+                    }
+                    _nt_divs  = {
+                        "Production (bu)":1e9,"Planted Acres":1e6,
+                        "Harvested Acres":1e6,"% Harvested":1,
+                        "Yield (bu/ac)":1,"Prevent Plant Acres":1e6,
+                    }
+                    _nt_unit  = _nt_units.get(nass_metric, "M bu")
+                    _nt_div   = _nt_divs.get(nass_metric, 1e6)
+                    _nt_fmt   = ".1f" if _nt_ratio else ",.0f"
+
+                    with st.spinner("Building national table…"):
+                        _nt_state_yr: dict = {}
+                        _nt_us_tot:   dict = {}
+                        for _ny in _HIST_YEARS:
+                            _ntdf = _load_state_for_stat(nass_crop, _ny, _nt_stat, _CACHE_VERSION)
+                            if not _ntdf.empty and "State" in _ntdf.columns:
+                                for _, _nr in _ntdf.iterrows():
+                                    _ns = _nr["State"]
+                                    if _ns not in _nt_state_yr:
+                                        _nt_state_yr[_ns] = {}
+                                    _nv = _nr.get("Value")
+                                    _nt_state_yr[_ns][_ny] = float(_nv) if pd.notna(_nv) and _nv else None
+                                _nt_us_tot[_ny] = float(
+                                    _ntdf["Value"].mean() if _nt_ratio else _ntdf["Value"].sum()
+                                )
+
+                    _nt_fig = build_heatmap_table(
+                        _nt_state_yr, _HIST_YEARS,
+                        title=f"{nass_crop} — {nass_metric} ({_nt_unit}) | "
+                              f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}",
+                        unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
+                        us_totals=_nt_us_tot if not _nt_ratio else None,
+                        fmt=_nt_fmt,
+                    )
+                    st.plotly_chart(_nt_fig, use_container_width=True,
+                                    key="nass_heatmap_tbl",
+                                    config={"displayModeBar": False})
+                    st.caption(
+                        f"Top 2 = green  ·  Bottom 2 = red  ·  "
+                        f"{'(Est)' if _tbl_est_years else ''}"
+                        " Highlighted state is current drill-down selection. "
+                        "Olympic Avg drops single highest and lowest year."
+                    )
+
+                    # Per-state detail (ASD District / County) in expander
+                    with st.expander(
+                        f"📋 {_state_full} Detail — {nass_metric} "
+                        f"({min(_HIST_YEARS)}–{max(_HIST_YEARS)})",
+                        expanded=False,
+                    ):
+                        _htbl_rows = []
+                        for _hst in _HIST_STATTYPES:
+                            _hrow = {"": _HIST_ROW_LBL[_hst]}
+                            for _hyr in _HIST_YEARS:
+                                _raw_s = _hfmt(_hst, _hist[_hyr].get(_hst))
+                                _dlt_s = (
+                                    _hdelta_str(_hdelta[_hyr].get(_hst))
+                                    if nass_change != "Current Year" else ""
+                                )
+                                _hrow[str(_hyr)] = f"{_raw_s}{_dlt_s}"
+                            _htbl_rows.append(_hrow)
+
+                        _htbl_df = pd.DataFrame(_htbl_rows).set_index("")
+                        if _tbl_est_years:
+                            _htbl_df = _htbl_df.rename(
+                                columns={str(y): f"{y} (Est)" for y in _tbl_est_years}
                             )
-                            _hrow[str(_hyr)] = f"{_raw_s}{_dlt_s}"
-                        _htbl_rows.append(_hrow)
 
-                    _htbl_df = pd.DataFrame(_htbl_rows).set_index("")
+                        def _htbl_style(val):
+                            if "(+" in str(val): return f"color:{ACCENT};font-weight:600"
+                            if "(-" in str(val): return "color:#ef4444;font-weight:600"
+                            return ""
 
-                    # Mark estimated year columns with " (Est)"
-                    if _tbl_est_years:
-                        _htbl_df = _htbl_df.rename(
-                            columns={str(y): f"{y} (Est)" for y in _tbl_est_years}
-                        )
+                        if nass_change != "Current Year":
+                            st.dataframe(_htbl_df.style.map(_htbl_style),
+                                         use_container_width=True)
+                        else:
+                            st.dataframe(_htbl_df, use_container_width=True)
 
-                    def _htbl_style(val):
-                        if "(+" in str(val): return f"color:{ACCENT};font-weight:600"
-                        if "(-" in str(val): return "color:#ef4444;font-weight:600"
-                        return ""
-
-                    if nass_change != "Current Year":
-                        st.dataframe(
-                            _htbl_df.style.map(_htbl_style),
-                            use_container_width=True,
-                        )
-                    else:
-                        st.dataframe(_htbl_df, use_container_width=True)
-
-                    if _tbl_est_years:
-                        st.caption(
-                            "Est = Some counties not yet final. Production is estimated "
-                            "using each county's historical share of state output, "
-                            "adjusted for current district performance, and scaled to "
-                            "reconcile with the NASS state total."
-                        )
+                        if _tbl_est_years:
+                            st.caption(
+                                "Est = Some counties not yet final — estimated via "
+                                "historical share × district performance adjustment."
+                            )
 
                     st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                                 unsafe_allow_html=True)
@@ -3296,49 +3593,39 @@ def main():
             with st.spinner("Loading historical data…"):
                 _yr_dfs = {_hy: _load_yr(_hy) for _hy in _hist_years}
 
-            _all_states = sorted(
-                set().union(*[set(df["State"].tolist())
-                               for df in _yr_dfs.values() if not df.empty])
+            # Build state × year dict for heatmap table
+            _stk_state_yr: dict = {}
+            _stk_us_tot:   dict = {}
+            for _hy, _df_h in _yr_dfs.items():
+                if _df_h.empty or _col not in _df_h.columns:
+                    continue
+                for _, _r in _df_h.iterrows():
+                    _s = _r["State"]
+                    if _s not in _stk_state_yr:
+                        _stk_state_yr[_s] = {}
+                    v = _r.get(_col)
+                    _stk_state_yr[_s][_hy] = float(v) if pd.notna(v) and v else None
+                _stk_us_tot[_hy] = float(
+                    _df_h[_col].mean() if _is_ratio else _df_h[_col].sum()
+                )
+
+            _stk_htbl = build_heatmap_table(
+                _stk_state_yr,
+                _hist_years,
+                title=f"{stk_crop} — {stk_view} ({_tbl_unit}) | {_period_note} "
+                      f"({min(_hist_years)}–{max(_hist_years)})",
+                unit=_tbl_unit,
+                divisor=1,          # values already in display units
+                is_ratio=_is_ratio,
+                us_totals=_stk_us_tot if not _is_ratio else None,
+                regions=None,       # no crop-specific regions for stocks
+                fmt=".1f" if _is_ratio else ",.0f",
             )
-
-            def _abs_val(df, col, state):
-                r = df[df["State"] == state]
-                if r.empty or col not in r.columns: return None
-                v = r[col].values[0]
-                return float(v) if pd.notna(v) and v else None
-
-            # Format: plain number, no unit suffix (unit is in title)
-            def _cell(v):
-                if v is None: return "—"
-                return f"{v:.1f}" if _is_ratio else f"{v/1e6:,.1f}"
-
-            # State × year pivot — numbers only, no Δ columns
-            _htbl_data = {"State Name": [ABBR_TO_NAME.get(s, s) for s in _all_states]}
-            for _hy in _hist_years:
-                _df_h = _yr_dfs.get(_hy, pd.DataFrame())
-                _htbl_data[str(_hy)] = [
-                    _cell(_abs_val(_df_h, _col, s)) for s in _all_states
-                ]
-
-            _htbl_df = pd.DataFrame(_htbl_data)
-            _htbl_df.insert(0, "State", _all_states)
-            _htbl_df = _htbl_df.set_index("State Name")
-            _htbl_df.index.name = "State"
-            st.dataframe(_htbl_df, use_container_width=True)
-
-            # US national summary row
-            _nat_agg = lambda df: (
-                df[_col].mean() if _is_ratio else df[_col].sum()
-            ) if not df.empty and _col in df.columns else None
-            _nr = {"": f"🇺🇸 US Total ({_tbl_unit})"}
-            for _hy in _hist_years:
-                _v = _nat_agg(_yr_dfs.get(_hy, pd.DataFrame()))
-                _nr[str(_hy)] = _cell(_v)
-            st.dataframe(
-                pd.DataFrame([_nr]).set_index(""),
-                use_container_width=True,
-            )
+            st.plotly_chart(_stk_htbl, use_container_width=True,
+                            key="stk_heatmap_tbl",
+                            config={"displayModeBar": False})
             st.caption(
+                "Top 2 values per row = green  ·  Bottom 2 = red  ·  "
                 "Total Supply = Sep 1 beginning stocks + crop year production. "
                 "Source: USDA NASS Grain Stocks Survey and Crop Production (state level only)."
             )
