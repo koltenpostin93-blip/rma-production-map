@@ -2713,12 +2713,88 @@ def main():
                                 f"Building {ABBR_TO_NAME.get(nass_state, nass_state)}"
                                 " ASD district map…"
                             ):
-                                nass_dist_fig = cached_nass_district_fig(
-                                    nass_state, nass_crop, nass_year,
-                                    nass_metric, nass_change,
-                                    nass_comp_yr if nass_comp_yr else 0,
-                                    _CACHE_VERSION, geo, logo_50yr, _fips_map,
+                                # ── Compute district values directly from
+                                # get_completed_county_data so map and table
+                                # always use identical numbers. ───────────
+                                _ms = _METRIC_TO_STAT.get(nass_metric, "production")
+                                _mr = nass_metric in ("Yield (bu/ac)", "% Harvested")
+
+                                # Years we need for the selected comparison
+                                _need = {nass_year}
+                                if nass_change == "vs Prior Year":
+                                    _need.add(nass_year - 1)
+                                elif nass_change == "vs Selected Year" and nass_comp_yr:
+                                    _need.add(nass_comp_yr)
+                                elif nass_change == "vs 3-Yr Avg":
+                                    for _y in [nass_year-1, nass_year-2, nass_year-3]:
+                                        if _y >= 2015: _need.add(_y)
+
+                                # Load and aggregate each year
+                                _mdv: dict = {}   # {year: {district: value}}
+                                _mde: dict = {}   # {year: {district: is_estimated}}
+                                for _yr in sorted(_need):
+                                    _cdf = get_completed_county_data(
+                                        nass_crop, nass_state, _yr, _ms, _CACHE_VERSION
+                                    )
+                                    _mdv[_yr] = {}; _mde[_yr] = {}
+                                    if not _cdf.empty and "District" in _cdf.columns:
+                                        for dist, grp in _cdf.groupby("District"):
+                                            _mdv[_yr][dist] = float(
+                                                grp["Value"].mean() if _mr
+                                                else grp["Value"].sum()
+                                            )
+                                            _mde[_yr][dist] = bool(
+                                                grp["is_estimated"].any()
+                                            )
+
+                                # Compute view values
+                                _cur = _mdv.get(nass_year, {})
+                                if nass_change == "Current Year":
+                                    _view = dict(_cur)
+                                else:
+                                    if nass_change == "vs Prior Year":
+                                        _base = _mdv.get(nass_year - 1, {})
+                                    elif nass_change == "vs Selected Year" and nass_comp_yr:
+                                        _base = _mdv.get(nass_comp_yr, {})
+                                    else:  # vs 3-Yr Avg
+                                        _avg_maps = [
+                                            _mdv.get(y, {})
+                                            for y in [nass_year-1, nass_year-2, nass_year-3]
+                                            if y >= 2015 and y in _mdv
+                                        ]
+                                        _base = {
+                                            d: sum(m[d] for m in _avg_maps if d in m)
+                                               / sum(1 for m in _avg_maps if d in m)
+                                            for d in set(d for m in _avg_maps for d in m)
+                                        }
+                                    _view = {}
+                                    for dist, cur_v in _cur.items():
+                                        base_v = _base.get(dist)
+                                        if cur_v and base_v and base_v != 0:
+                                            _view[dist] = (cur_v - base_v) / abs(base_v) * 100
+
+                                # Build DataFrames for the figure builder
+                                _dvdf = pd.DataFrame(
+                                    [(d, v) for d, v in _view.items()],
+                                    columns=["District", "Value"]
+                                ).dropna(subset=["Value"])
+                                _drdf = pd.DataFrame(
+                                    [(d, v) for d, v in _cur.items()],
+                                    columns=["District", "Value"]
+                                ).dropna(subset=["Value"])
+                                _est_dists = {
+                                    d for d, ie in _mde.get(nass_year, {}).items() if ie
+                                }
+                                _dgdf = build_nass_district_gdf(
+                                    _sfips, _CACHE_VERSION, _fips_map, geo
                                 )
+                                nass_dist_fig = build_nass_district_fig(
+                                    _dvdf, _drdf, _dgdf,
+                                    nass_state, nass_crop, nass_year,
+                                    nass_metric, nass_change, logo_50yr, geo,
+                                    estimated_districts=_est_dists,
+                                )
+
                             if nass_dist_fig is None:
                                 st.info(f"ASD district map not available for "
                                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
