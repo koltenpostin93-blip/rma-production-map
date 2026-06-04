@@ -40,7 +40,8 @@ STOCKS_PERIODS = {           # display name → NASS reference_period_desc
     "Mar 1":  "FIRST OF MAR",
     "Jun 1":  "FIRST OF JUN",
 }
-STOCKS_VIEWS   = ["Total Stocks", "On-Farm", "Off-Farm", "% On-Farm", "% Off-Farm"]
+STOCKS_VIEWS   = ["Total Stocks", "On-Farm", "Off-Farm", "% On-Farm", "% Off-Farm",
+                  "Production", "Total Supply"]
 STOCKS_CROPS   = ["Corn", "Soybeans", "Wheat", "Sorghum"]
 STOCKS_CROP_PARAMS = {
     "Corn":     {"commodity_desc": "CORN"},
@@ -2905,56 +2906,85 @@ def main():
                 st.cache_data.clear(); st.rerun()
 
         # ── Load data ─────────────────────────────────────────────────────────
-        with st.spinner(f"Loading {stk_year} {stk_crop} stocks ({stk_period_lbl})…"):
-            stk_df = load_grain_stocks(stk_crop, stk_year, stk_period, _CACHE_VERSION)
+        with st.spinner(f"Loading {stk_year} {stk_crop} data…"):
+            stk_df   = load_grain_stocks(stk_crop, stk_year, stk_period, _CACHE_VERSION)
+            # Production (state level — always loaded)
+            _prod_st = _load_state_for_stat(stk_crop, stk_year, "production", _CACHE_VERSION)
+            _prod_map = dict(zip(_prod_st["State"], _prod_st["Value"])) \
+                        if not _prod_st.empty else {}
+            # Sep 1 stocks — used for Total Supply regardless of selected period
+            _sep_df  = load_grain_stocks(stk_crop, stk_year, "FIRST OF SEP", _CACHE_VERSION)
+            _sep_map = dict(zip(_sep_df["State"], _sep_df["Total"])) \
+                       if not _sep_df.empty else {}
 
-        if stk_df.empty:
+        if stk_df.empty and not _prod_map:
             st.info(
-                f"No {stk_crop} stocks data available for {stk_year} {stk_period_lbl}. "
+                f"No {stk_crop} data available for {stk_year} {stk_period_lbl}. "
                 "NASS publishes quarterly stocks — data may not yet be released for this period."
             )
         else:
-            # ── Determine which column to map ─────────────────────────────────
+            # Enrich stk_df with Production and Total Supply columns
+            all_states = set(stk_df["State"].tolist()) | set(_prod_map.keys())
+            if stk_df.empty:
+                stk_df = pd.DataFrame({"State": sorted(all_states)})
+                for c in ("Total","OnFarm","OffFarm","PctOnFarm","PctOffFarm"):
+                    stk_df[c] = None
+
+            stk_df["Production"]  = stk_df["State"].map(_prod_map)
+            stk_df["TotalSupply"] = stk_df["State"].map(
+                lambda s: (_sep_map.get(s) or 0) + (_prod_map.get(s) or 0)
+            ).replace(0, None)
+            stk_df["StateName"] = stk_df["State"].map(ABBR_TO_NAME)
+
+            # ── View config ───────────────────────────────────────────────────
+            def _bu_fmt(v):
+                if v is None or (isinstance(v, float) and np.isnan(v)):
+                    return "—"
+                return f"{v/1e9:.2f}B bu" if v >= 1e9 else f"{v/1e6:.0f}M bu"
+
             _stk_col_map = {
-                "Total Stocks": ("Total",      "YlOrBr",  "bu"),
-                "On-Farm":      ("OnFarm",     "YlGn",    "bu"),
-                "Off-Farm":     ("OffFarm",    "YlOrRd",  "bu"),
-                "% On-Farm":    ("PctOnFarm",  "RdYlGn",  "%"),
-                "% Off-Farm":   ("PctOffFarm", "RdYlBu",  "%"),
+                "Total Stocks": ("Total",        "YlOrBr", "bu"),
+                "On-Farm":      ("OnFarm",        "YlGn",   "bu"),
+                "Off-Farm":     ("OffFarm",       "YlOrRd", "bu"),
+                "% On-Farm":    ("PctOnFarm",     "RdYlGn", "%"),
+                "% Off-Farm":   ("PctOffFarm",    "RdYlBu", "%"),
+                "Production":   ("Production",    "YlOrBr", "bu"),
+                "Total Supply": ("TotalSupply",   "YlOrBr", "bu"),
             }
             _col, _cscale, _unit = _stk_col_map[stk_view]
-            stk_df["StateName"] = stk_df["State"].map(ABBR_TO_NAME)
             _is_pct = _unit == "%"
 
             # ── KPI cards ─────────────────────────────────────────────────────
-            _us_total  = stk_df["Total"].sum()
-            _us_on     = stk_df["OnFarm"].sum()
-            _us_off    = stk_df["OffFarm"].sum()
-            _us_pct_on = _us_on  / _us_total * 100 if _us_total > 0 else 0
-            _us_pct_off= _us_off / _us_total * 100 if _us_total > 0 else 0
+            _us_stk   = stk_df["Total"].sum()
+            _us_on    = stk_df["OnFarm"].sum()
+            _us_off   = stk_df["OffFarm"].sum()
+            _us_prod  = stk_df["Production"].sum()
+            _us_sup   = stk_df["TotalSupply"].sum()
+            _pct_on   = _us_on  / _us_stk * 100 if _us_stk > 0 else 0
+            _pct_off  = _us_off / _us_stk * 100 if _us_stk > 0 else 0
 
             k1, k2, k3, k4, k5 = st.columns(5)
-            def _bu_fmt(v):
-                return f"{v/1e9:.2f}B bu" if v >= 1e9 else f"{v/1e6:.0f}M bu"
-            k1.metric(f"US Total Stocks",  _bu_fmt(_us_total))
-            k2.metric(f"On-Farm",           _bu_fmt(_us_on),
-                      f"{_us_pct_on:.1f}% of total")
-            k3.metric(f"Off-Farm",          _bu_fmt(_us_off),
-                      f"{_us_pct_off:.1f}% of total")
-            k4.metric("States Reporting",  f"{stk_df['State'].nunique()}")
-            k5.metric("Period",            f"{stk_period_lbl} {stk_year}")
+            k1.metric(f"Total Stocks ({stk_period_lbl})", _bu_fmt(_us_stk))
+            k2.metric("On-Farm",    _bu_fmt(_us_on),  f"{_pct_on:.1f}% of total")
+            k3.metric("Off-Farm",   _bu_fmt(_us_off), f"{_pct_off:.1f}% of total")
+            k4.metric(f"{stk_year} Production",  _bu_fmt(_us_prod))
+            k5.metric("Total Supply (Sep + Prod)", _bu_fmt(_us_sup),
+                      help="Sep 1 beginning stocks + crop year production")
 
             st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
                         unsafe_allow_html=True)
 
             # ── State choropleth map ──────────────────────────────────────────
+            _period_note = (
+                "Sep 1 stocks + production"
+                if stk_view == "Total Supply"
+                else stk_period_lbl
+            )
+            _map_title = f"{stk_year} {stk_crop} — {stk_view} | {_period_note}"
             _plot_df = stk_df.dropna(subset=[_col]).copy()
-            _z_vals  = _plot_df[_col].tolist()
+            _z_vals  = [v for v in _plot_df[_col].tolist() if pd.notna(v)]
             _z_min   = min(_z_vals) if _z_vals else 0
             _z_max   = max(_z_vals) if _z_vals else 1
-
-            _hover_sfx = "%" if _is_pct else " bu"
-            _hover_fmt = ":.1f" if _is_pct else ":,.0f"
 
             stk_fig = px.choropleth(
                 _plot_df,
@@ -2962,15 +2992,13 @@ def main():
                 color=_col, scope="usa",
                 color_continuous_scale=_cscale,
                 hover_name="StateName",
-                hover_data={_col: _hover_fmt, "State": False},
+                hover_data={_col: ":.1f" if _is_pct else ":,.0f", "State": False},
                 labels={_col: stk_view},
+                range_color=[_z_min, _z_max],
             )
             stk_fig.update_layout(
-                **_base_layout(
-                    f"{stk_year} {stk_crop} — {stk_view} | {stk_period_lbl}"
-                ),
-                height=520,
-                dragmode=False,
+                **_base_layout(_map_title),
+                height=520, dragmode=False,
                 geo=dict(showlakes=False, bgcolor=DARK, landcolor=LAND,
                          showframe=False, projection_type="albers usa"),
                 coloraxis_colorbar=dict(
@@ -2978,12 +3006,10 @@ def main():
                     tickfont=dict(color=TEXT),
                 ),
             )
-            # State labels
             _lbl_lons, _lbl_lats, _lbl_texts = [], [], []
             for _, row in _plot_df.iterrows():
-                if row["State"] in STATE_CENTROIDS:
-                    _v = row[_col]
-                    _lbl = f"{_v:.1f}%" if _is_pct else _bu_fmt(_v)
+                if row["State"] in STATE_CENTROIDS and pd.notna(row[_col]):
+                    _lbl = f"{row[_col]:.1f}%" if _is_pct else _bu_fmt(row[_col])
                     _lbl_lons.append(STATE_CENTROIDS[row["State"]][0])
                     _lbl_lats.append(STATE_CENTROIDS[row["State"]][1])
                     _lbl_texts.append(_lbl)
@@ -2994,7 +3020,6 @@ def main():
                     showlegend=False, hoverinfo="skip", geo="geo",
                 ))
             _add_logo(stk_fig, logo_50yr, size=0.30, opacity=1.0)
-            stk_fig.update_layout(dragmode=False)
             st.plotly_chart(stk_fig, use_container_width=True, key="stk_map",
                             config={"scrollZoom": False, "displayModeBar": False,
                                     "doubleClick": False})
@@ -3002,32 +3027,93 @@ def main():
             st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
                         unsafe_allow_html=True)
 
-            # ── State data table ──────────────────────────────────────────────
+            # ── Historical table ──────────────────────────────────────────────
+            _hist_n_yrs = 6
+            _hist_years = [y for y in NASS_YEARS if y <= stk_year][:_hist_n_yrs]
             st.markdown(
                 f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
                 f"margin:0 0 6px 0;letter-spacing:0.04em;'>"
-                f"📋 STATE DETAIL — {stk_year} {stk_crop} STOCKS | {stk_period_lbl}</p>",
+                f"📅 HISTORICAL — {stk_crop} {stk_view} | {_period_note} "
+                f"({min(_hist_years)}–{max(_hist_years)})</p>",
                 unsafe_allow_html=True,
             )
-            _tbl = stk_df[["State", "Total", "OnFarm", "OffFarm",
-                            "PctOnFarm", "PctOffFarm"]].copy()
-            _tbl.insert(0, "State Name", _tbl["State"].map(ABBR_TO_NAME))
-            for _c in ("Total", "OnFarm", "OffFarm"):
-                _tbl[_c] = _tbl[_c].apply(
-                    lambda v: _bu_fmt(v) if pd.notna(v) and v > 0 else "—"
-                )
-            for _c in ("PctOnFarm", "PctOffFarm"):
-                _tbl[_c] = _tbl[_c].apply(
-                    lambda v: f"{v:.1f}%" if pd.notna(v) else "—"
-                )
-            _tbl.columns = ["State Name", "Abbr",
-                             "Total Stocks", "On-Farm", "Off-Farm",
-                             "% On-Farm", "% Off-Farm"]
-            st.dataframe(_tbl, use_container_width=True, hide_index=True)
+            with st.spinner("Loading historical data…"):
+                _hist_rows = {}   # {year: {state: value}}
+                for _hy in _hist_years:
+                    _h_stk  = load_grain_stocks(stk_crop, _hy, stk_period, _CACHE_VERSION)
+                    _h_prod = _load_state_for_stat(stk_crop, _hy, "production", _CACHE_VERSION)
+                    _h_sep  = load_grain_stocks(stk_crop, _hy, "FIRST OF SEP", _CACHE_VERSION)
+                    _h_prod_map = dict(zip(_h_prod["State"], _h_prod["Value"])) \
+                                  if not _h_prod.empty else {}
+                    _h_sep_map  = dict(zip(_h_sep["State"], _h_sep["Total"])) \
+                                  if not _h_sep.empty else {}
+                    if not _h_stk.empty:
+                        _h_stk["Production"]  = _h_stk["State"].map(_h_prod_map)
+                        _h_stk["TotalSupply"] = _h_stk["State"].map(
+                            lambda s: (_h_sep_map.get(s) or 0) + (_h_prod_map.get(s) or 0)
+                        ).replace(0, None)
+                    else:
+                        _h_stk = pd.DataFrame({
+                            "State": list(_h_prod_map.keys()),
+                            "Total": None, "OnFarm": None, "OffFarm": None,
+                            "PctOnFarm": None, "PctOffFarm": None,
+                            "Production": list(_h_prod_map.values()),
+                            "TotalSupply": [
+                                (_h_sep_map.get(s) or 0) + v
+                                for s, v in _h_prod_map.items()
+                            ],
+                        })
+                    _hist_rows[_hy] = dict(zip(_h_stk["State"], _h_stk[_col])) \
+                                      if _col in _h_stk.columns else {}
+
+            # US national total per year row
+            _nat_hist = {}
+            for _hy in _hist_years:
+                _df_yr  = load_grain_stocks(stk_crop, _hy, stk_period, _CACHE_VERSION)
+                _prd_yr = _load_state_for_stat(stk_crop, _hy, "production", _CACHE_VERSION)
+                _sep_yr = load_grain_stocks(stk_crop, _hy, "FIRST OF SEP", _CACHE_VERSION)
+                if stk_view in ("Total Stocks","On-Farm","Off-Farm","% On-Farm","% Off-Farm") \
+                        and not _df_yr.empty:
+                    _nat_hist[_hy] = _df_yr[_col].sum() if not _is_pct \
+                                     else _df_yr[_col].mean()
+                elif stk_view == "Production" and not _prd_yr.empty:
+                    _nat_hist[_hy] = _prd_yr["Value"].sum()
+                elif stk_view == "Total Supply":
+                    _s = _sep_yr["Total"].sum() if not _sep_yr.empty else 0
+                    _p = _prd_yr["Value"].sum() if not _prd_yr.empty else 0
+                    _nat_hist[_hy] = _s + _p if (_s + _p) > 0 else None
+
+            # Build state × year pivot
+            _all_states = sorted(
+                set().union(*[set(v.keys()) for v in _hist_rows.values()])
+            )
+            _htbl_data = {"State": _all_states,
+                          "State Name": [ABBR_TO_NAME.get(s, s) for s in _all_states]}
+            for _hy in sorted(_hist_years):
+                _yr_map = _hist_rows.get(_hy, {})
+                _htbl_data[str(_hy)] = [
+                    (f"{v:.1f}%" if _is_pct else _bu_fmt(v))
+                    if pd.notna(v) and v else "—"
+                    for v in [_yr_map.get(s) for s in _all_states]
+                ]
+            _htbl_df = pd.DataFrame(_htbl_data).set_index("State Name")
+            _htbl_df.index.name = "State"
+            st.dataframe(_htbl_df, use_container_width=True)
+
+            # US total summary row
+            _nat_row = {"Metric": f"🇺🇸 US Total — {stk_view}"}
+            for _hy in sorted(_hist_years):
+                _v = _nat_hist.get(_hy)
+                _nat_row[str(_hy)] = (f"{_v:.1f}%" if _is_pct else _bu_fmt(_v)) \
+                                     if _v else "—"
+            st.dataframe(
+                pd.DataFrame([_nat_row]).set_index("Metric"),
+                use_container_width=True,
+            )
             st.caption(
-                "Source: USDA NASS Grain Stocks Survey. "
-                "Published quarterly at the state level — "
-                "county and district breakdowns are not available."
+                "Source: USDA NASS Grain Stocks Survey (state level) and Crop Production. "
+                "Total Supply = Sep 1 beginning stocks + crop year production. "
+                "County and district breakdowns are not available for stocks."
             )
 
     # ══════════════════════════════════════════════════════════════════════════
