@@ -1553,6 +1553,99 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_vie
     return fig
 
 
+def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
+                                    crop: str, year: int, logo_50yr,
+                                    centroids) -> go.Figure:
+    """
+    County production choropleth using completed (reported + Tier-1 estimated) data.
+    Estimated counties are shown with the same colour scale but get a small
+    'Est' text label and an '(Est)' suffix in their hover tooltip.
+    """
+    if completed_df.empty:
+        return None
+
+    sfips = STATE_FIPS_ALL.get(state)
+    if not sfips:
+        return None
+
+    cfg        = _nass_view_cfg("Production (bu)", "Current Year")
+    state_name = ABBR_TO_NAME.get(state, state)
+    state_geo  = get_state_geojson(geo, sfips)
+    all_fips   = [f["properties"]["STATE"] + f["properties"]["COUNTY"]
+                  for f in state_geo["features"]]
+
+    fips_val = dict(zip(completed_df["fips"], completed_df["Production"]))
+    fips_cty = dict(zip(completed_df["fips"], completed_df["County"]))
+    fips_est = dict(zip(completed_df["fips"], completed_df["is_estimated"]))
+
+    z_vals, hover_texts = [], []
+    for fips in all_fips:
+        val = fips_val.get(fips, 0)
+        z_vals.append(val)
+        cty = fips_cty.get(fips, fips)
+        sfx = " (Est)" if fips_est.get(fips, False) else ""
+        hover_texts.append(
+            f"{cty}{sfx}: {val:,.0f} bu" if val else f"{cty}: No data"
+        )
+
+    _pos = [v for v in z_vals if v > 0]
+    z_min = min(_pos) if _pos else 0
+    z_max = max(_pos) if _pos else 1
+
+    county_line = dict(color="#3d5248", width=0.8)
+    fig = go.Figure()
+
+    # Background (uncoloured county outlines)
+    fig.add_trace(go.Choropleth(
+        geojson=state_geo, featureidkey="id",
+        locations=all_fips, z=[0] * len(all_fips),
+        colorscale=[[0, PANEL], [1, PANEL]], showscale=False,
+        marker=dict(line=county_line), hoverinfo="skip",
+    ))
+
+    # Production values (reported + estimated, same colour scale)
+    fig.add_trace(go.Choropleth(
+        geojson=state_geo, featureidkey="id",
+        locations=all_fips, z=z_vals,
+        colorscale=cfg["cscale"], zmin=z_min, zmax=z_max,
+        colorbar=dict(
+            title=dict(text=cfg["clabel"], font=dict(color=TEXT)),
+            tickfont=dict(color=TEXT),
+        ),
+        marker=dict(line=county_line),
+        text=hover_texts,
+        hovertemplate="%{text}<extra></extra>",
+    ))
+
+    # "Est" labels on estimated county centroids
+    est_fips = [f for f in all_fips if fips_est.get(f, False)]
+    if est_fips and centroids:
+        _elons = [centroids[f][0] for f in est_fips if f in centroids]
+        _elats = [centroids[f][1] for f in est_fips if f in centroids]
+        if _elons:
+            fig.add_trace(go.Scattergeo(
+                lon=_elons, lat=_elats, mode="text",
+                text=["Est"] * len(_elons),
+                textfont=dict(color="white", size=7, family="Arial Bold"),
+                showlegend=False, hoverinfo="skip",
+            ))
+
+    title_text = (
+        f"NASS {year} {crop} — Production (bu) | {state_name} Counties"
+        f"<br><sup>Map labels in {cfg['label_unit']}  ·  Est = county value estimated</sup>"
+    )
+    fig.update_geos(fitbounds="locations", visible=False, bgcolor=DARK, landcolor=LAND)
+    fig.update_layout(**_base_layout(title_text), height=620)
+    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+
+    # Production labels for reported counties only (same as existing county fig)
+    rep_fips = [f for f in all_fips if f in fips_val and not fips_est.get(f, False)]
+    rep_vals = [fips_val[f] for f in rep_fips]
+    _place_labels(fig, rep_fips, rep_vals, centroids, cfg["label_fn"])
+
+    return fig
+
+
 def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
     """ranked_df: DataFrame with [County, Value] pre-filtered to a single state."""
     cfg        = _nass_view_cfg(metric, change_view)
@@ -2163,15 +2256,31 @@ def main():
                                 st.plotly_chart(nass_dist_fig, use_container_width=True,
                                                 key="nass_district_map")
                     else:
+                        _use_est_county = (
+                            nass_metric == "Production (bu)"
+                            and nass_change == "Current Year"
+                        )
                         with st.spinner(
                             f"Building {ABBR_TO_NAME.get(nass_state, nass_state)} county map…"
                         ):
-                            nass_county_fig = cached_nass_county_fig(
-                                nass_state, nass_crop, nass_year,
-                                nass_metric, nass_change,
-                                nass_comp_yr if nass_comp_yr else 0,
-                                _CACHE_VERSION, geo, centroids, logo_50yr, fips_lk
-                            )
+                            if _use_est_county:
+                                _comp_cty = get_completed_county_production(
+                                    nass_crop, nass_state, nass_year, _CACHE_VERSION
+                                )
+                                nass_county_fig = build_nass_county_fig_with_est(
+                                    _comp_cty, geo, nass_state, nass_crop,
+                                    nass_year, logo_50yr, centroids,
+                                )
+                                _cty_n_est = int(_comp_cty["is_estimated"].sum()) \
+                                    if not _comp_cty.empty else 0
+                            else:
+                                nass_county_fig = cached_nass_county_fig(
+                                    nass_state, nass_crop, nass_year,
+                                    nass_metric, nass_change,
+                                    nass_comp_yr if nass_comp_yr else 0,
+                                    _CACHE_VERSION, geo, centroids, logo_50yr, fips_lk
+                                )
+                                _cty_n_est = 0
                         if nass_county_fig is None:
                             st.info(
                                 f"County map not available for "
@@ -2180,6 +2289,14 @@ def main():
                         else:
                             st.plotly_chart(nass_county_fig, use_container_width=True,
                                             key="nass_county_map")
+                            if _cty_n_est > 0:
+                                st.caption(
+                                    f"Est = {_cty_n_est} counties not yet final. "
+                                    "Production is estimated using each county's "
+                                    "historical share of state output, adjusted for "
+                                    "current district performance, and scaled to "
+                                    "reconcile with the NASS state total."
+                                )
 
                     st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                                 unsafe_allow_html=True)
