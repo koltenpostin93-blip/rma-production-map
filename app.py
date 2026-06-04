@@ -1783,6 +1783,38 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
     return fig
 
 
+def build_history_bar(series_dict: dict, years: list, title: str,
+                       y_label: str = "", stacked: bool = False) -> go.Figure:
+    """
+    Build a stacked or grouped bar chart.
+    series_dict: {series_name: [value_per_year, ...]}  — values in display units
+    years: list of year ints (x-axis)
+    """
+    _SERIES_COLORS = ["#4ade80", "#60a5fa", "#f59e0b", "#f87171",
+                      "#a78bfa", "#34d399", "#fb923c"]
+    fig = go.Figure()
+    for i, (name, vals) in enumerate(series_dict.items()):
+        fig.add_trace(go.Bar(
+            x=years, y=vals, name=name,
+            marker_color=_SERIES_COLORS[i % len(_SERIES_COLORS)],
+            marker_line_width=0,
+        ))
+    layout = _base_layout(title)
+    layout.update(
+        height=320,
+        barmode="stack" if stacked else "group",
+        legend=dict(orientation="h", y=1.08, x=0.5, xanchor="center",
+                    font=dict(color=TEXT, size=10)),
+        xaxis=dict(tickvals=years, ticktext=[str(y) for y in years],
+                   gridcolor=BORDER, tickfont=dict(color=MUTED)),
+        yaxis=dict(title=y_label, gridcolor=BORDER,
+                   tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
+        margin=dict(l=60, r=20, t=50, b=30),
+    )
+    fig.update_layout(**layout)
+    return fig
+
+
 def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
     """ranked_df: DataFrame with [County, Value] pre-filtered to a single state."""
     cfg        = _nass_view_cfg(metric, change_view)
@@ -2451,6 +2483,55 @@ def main():
                                     "current district performance, and scaled to "
                                     "reconcile with the NASS state total."
                                 )
+
+                    st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
+                                unsafe_allow_html=True)
+
+                    # ── Historical Bar Chart ──────────────────────────────────
+                    _nc_n = st.radio("Chart history (years)", [5, 10],
+                                     horizontal=True, key="nass_chart_yrs", index=0)
+                    _nc_yrs = sorted([y for y in NASS_YEARS if y <= nass_year][:_nc_n])
+                    _nc_stat = _METRIC_TO_STAT.get(nass_metric, "production")
+
+                    with st.spinner("Building chart…"):
+                        _nc_vals = []
+                        for _ny in _nc_yrs:
+                            _ndf = _load_state_for_stat(nass_crop, _ny, _nc_stat, _CACHE_VERSION)
+                            if not _ndf.empty and "State" in _ndf.columns:
+                                _ndf_s = _ndf[_ndf["State"] == nass_state]
+                                if not _ndf_s.empty:
+                                    _nc_vals.append(float(
+                                        _ndf_s["Value"].mean()
+                                        if nass_metric in ("Yield (bu/ac)","% Harvested")
+                                        else _ndf_s["Value"].sum()
+                                    ))
+                                else:
+                                    _nc_vals.append(None)
+                            else:
+                                _nc_vals.append(None)
+
+                    _nc_unit = {
+                        "Production (bu)":    1e9, "Planted Acres": 1e6,
+                        "Harvested Acres":    1e6, "% Harvested":   1,
+                        "Yield (bu/ac)":      1,   "Prevent Plant Acres": 1e6,
+                        "pct_harvested":      1,
+                    }.get(nass_metric, 1e9)
+                    _nc_y_lbl = {
+                        "Production (bu)": "Billion bu", "Planted Acres": "Million ac",
+                        "Harvested Acres": "Million ac", "% Harvested": "%",
+                        "Yield (bu/ac)": "bu/ac",        "Prevent Plant Acres": "Million ac",
+                    }.get(nass_metric, "")
+
+                    _nc_fig = build_history_bar(
+                        {nass_metric: [v / _nc_unit if v else 0 for v in _nc_vals]},
+                        _nc_yrs,
+                        title=f"{ABBR_TO_NAME.get(nass_state, nass_state)} "
+                              f"{nass_crop} — {nass_metric}",
+                        y_label=_nc_y_lbl,
+                    )
+                    st.plotly_chart(_nc_fig, use_container_width=True,
+                                    key="nass_hist_chart",
+                                    config={"displayModeBar": False})
 
                     st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                                 unsafe_allow_html=True)
@@ -3146,6 +3227,53 @@ def main():
                     label_visibility="collapsed",
                     help="Nominal = absolute change in bushels  |  % Change = relative change",
                 )
+
+            st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
+                        unsafe_allow_html=True)
+
+            # ── Historical bar chart ──────────────────────────────────────────
+            _chart_n = st.radio("Chart history (years)", [5, 10],
+                                horizontal=True, key="stk_chart_yrs", index=0)
+            _chart_yrs = sorted([y for y in NASS_YEARS if y <= stk_year][:_chart_n])
+
+            with st.spinner("Building chart…"):
+                _cyr_dfs = {y: _load_yr(y) for y in _chart_yrs}
+
+            def _us_col(df, col):
+                if df.empty or col not in df.columns: return 0
+                return df[col].mean() if _is_ratio else df[col].sum()
+
+            if stk_view == "Total Stocks":
+                _chart_fig = build_history_bar(
+                    {
+                        "On-Farm":  [_us_col(_cyr_dfs[y], "OnFarm")  / 1e9 for y in _chart_yrs],
+                        "Off-Farm": [_us_col(_cyr_dfs[y], "OffFarm") / 1e9 for y in _chart_yrs],
+                    },
+                    _chart_yrs,
+                    title=f"US {stk_crop} Total Stocks — {stk_period_lbl}",
+                    y_label="Billion bu", stacked=True,
+                )
+            elif stk_view == "Total Supply":
+                _chart_fig = build_history_bar(
+                    {
+                        "Sep 1 Stocks": [_us_col(_cyr_dfs[y], "Total")      / 1e9 for y in _chart_yrs],
+                        "Production":   [_us_col(_cyr_dfs[y], "Production") / 1e9 for y in _chart_yrs],
+                    },
+                    _chart_yrs,
+                    title=f"US {stk_crop} Total Supply (Sep Stocks + Production)",
+                    y_label="Billion bu", stacked=True,
+                )
+            else:
+                _y_vals = [_us_col(_cyr_dfs[y], _col) / (1 if _is_ratio else 1e9)
+                           for y in _chart_yrs]
+                _chart_fig = build_history_bar(
+                    {stk_view: _y_vals},
+                    _chart_yrs,
+                    title=f"US {stk_crop} {stk_view} — {stk_period_lbl}",
+                    y_label="%" if _is_ratio else "Billion bu",
+                )
+            st.plotly_chart(_chart_fig, use_container_width=True, key="stk_chart",
+                            config={"displayModeBar": False})
 
             st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
                         unsafe_allow_html=True)
