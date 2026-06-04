@@ -1865,6 +1865,7 @@ def build_heatmap_table(
     divisor: float = 1e6,    # raw → display (1 if already display units)
     is_ratio: bool = False,  # True for %, yield — use mean for region totals
     us_totals: dict = None,  # {year: raw_us_total} for % of US column
+    total_label: str = "US Total",  # label for the bottom totals row
     regions: dict = None,    # use NASS_REGIONAL_GROUPS if None
     fmt: str = ",.0f",
     top_row: dict = None,           # {year: raw_value} — summary row pinned at top
@@ -1973,7 +1974,7 @@ def build_heatmap_table(
     if us_totals:
         us_vals = [_disp(us_totals.get(y)) for y in years]
         bgs, fgs = _row_colors(us_vals)
-        row_labels.append("US Total")
+        row_labels.append(total_label)
         row_data.append(us_vals)
         row_bg.append(bgs); row_fg.append(fgs)
         row_is_region.append(True)
@@ -3254,6 +3255,7 @@ def main():
                             us_totals=_nd_us if not _nt_ratio else None,
                             regions=None, fmt=_nt_fmt,
                             cell_status=_nd_cell_status,
+                            total_label=f"{nass_state} Total",
                         )
 
                     else:
@@ -3276,6 +3278,7 @@ def main():
                             _nco_yr, _HIST_YEARS, title=_nt_tbl_title,
                             unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
                             regions=None, fmt=_nt_fmt,
+                            total_label=f"{nass_state} Total",
                         )
 
                     st.plotly_chart(_nt_fig, use_container_width=True,
@@ -3345,6 +3348,7 @@ def main():
                                         top_row_label=f"{_dist_name} District Total",
                                         cell_status=_cty_cell_status,
                                         top_row_cell_status=_dist_top_cs,
+                                        total_label=f"{nass_state} Total",
                                     )
                                     st.plotly_chart(
                                         _cty_fig, use_container_width=True,
