@@ -865,7 +865,7 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
         # Label line 2: metric value (always)
         # Add "Est" marker to districts with estimated counties
         _est_flag = (
-            " (Est)" if (estimated_districts and _dn in estimated_districts) else ""
+            "<br>Est" if (estimated_districts and _dn in estimated_districts) else ""
         )
         if change_view != "Current Year" and _dv is not None:
             _sign = "+" if _dv >= 0 else ""
