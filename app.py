@@ -1816,10 +1816,10 @@ def build_heatmap_table(
     us_totals: dict = None,  # {year: raw_us_total} for % of US column
     regions: dict = None,    # use NASS_REGIONAL_GROUPS if None
     fmt: str = ",.0f",
-    top_row: dict = None,        # {year: raw_value} — summary row pinned at top
-    top_row_label: str = "",     # label for the top summary row
-    top_row_status: str = "",    # status tag for the top summary row
-    row_status: dict = None,     # {row_label: "(Est)"/"(USDA)"} shown right of name
+    top_row: dict = None,           # {year: raw_value} — summary row pinned at top
+    top_row_label: str = "",        # label for the top summary row
+    cell_status: dict = None,       # {row_label: {year: bool}} True=append " E"
+    top_row_cell_status: dict = None,  # {year: bool} for the top summary row
 ) -> go.Figure:
     """
     Styled Plotly table with:
@@ -1985,61 +1985,55 @@ def build_heatmap_table(
         else:
             stats_pct_us.append("—"); bg_pct_us.append(_S); fg_pct_us.append(_M)
 
-    # ── Build column arrays for Plotly (column-major) ─────────────────────────
-    _has_status = bool(row_status or top_row_status)
+    # Merge top_row_cell_status into cell_status under the top row's label key
+    if top_row_cell_status and top_row_label:
+        _full_cs = dict(cell_status or {})
+        _full_cs[f"▶  {top_row_label}"] = top_row_cell_status
+    else:
+        _full_cs = cell_status or {}
 
-    hdr_vals = ["State / Region"]
-    if _has_status:
-        hdr_vals.append("")          # narrow status column, no header text
-    hdr_vals += [str(y) for y in years] + \
+    def _cell_str(r, c):
+        """Format cell value, appending ' E' if that year is estimated."""
+        val_str = _fmt_num(row_data[r][c])
+        if _full_cs:
+            lbl = row_labels[r]
+            yr  = years[c]
+            if _full_cs.get(lbl, {}).get(yr, False):
+                return f"{val_str} E"
+        return val_str
+
+    # ── Build column arrays for Plotly (column-major) ─────────────────────────
+    hdr_vals = ["State / Region"] + [str(y) for y in years] + \
                ["% vs LY", f"Olympic Avg\n({unit})", "% of Avg",
                 "Min", "Max", "% of U.S."]
     hdr_bg   = [_P] * len(hdr_vals)
-    hdr_fg   = [_M] + ([_M] if _has_status else []) + [_T] * len(years) + [_M] * 6
+    hdr_fg   = [_M] + [_T] * len(years) + [_M] * 6
 
     # Row label column
     lbl_bg   = [(_BR if row_is_region[i] else _P) for i in range(n_rows)]
     lbl_fg   = [(_G  if row_is_region[i] else _T) for i in range(n_rows)]
 
-    # Status column (narrow, right-aligned, amber for Est / muted for USDA)
-    if _has_status:
-        # Build status value list from row_labels (before any rename)
-        def _status_tag(lbl, is_region_row):
-            if is_region_row and top_row_label and lbl == f"▶  {top_row_label}":
-                return top_row_status
-            return (row_status or {}).get(lbl, "")
-        status_vals = [_status_tag(row_labels[i], row_is_region[i]) for i in range(n_rows)]
-        status_bgs  = [lbl_bg[i] for i in range(n_rows)]
-        status_fgs  = [
-            "#f59e0b" if "(Est)" in (status_vals[i] or "")
-            else "#7a9990"
-            for i in range(n_rows)
-        ]
-
-    # Year columns
-    yr_cell_vals = [[_fmt_num(row_data[r][c]) for r in range(n_rows)]
+    # Year columns — values carry ' E' suffix where estimated
+    yr_cell_vals = [[_cell_str(r, c) for r in range(n_rows)]
                     for c in range(len(years))]
     yr_cell_bgs  = [[row_bg[r][c] for r in range(n_rows)] for c in range(len(years))]
     yr_cell_fgs  = [[row_fg[r][c] for r in range(n_rows)] for c in range(len(years))]
 
-    _status_insert = ([status_vals], [status_bgs], [status_fgs]) if _has_status else ([], [], [])
-
-    all_vals = ([row_labels] + _status_insert[0]
+    all_vals = ([row_labels]
                 + yr_cell_vals
                 + [stats_pct_vs_ly, stats_avg, stats_pct_avg,
                    stats_min, stats_max, stats_pct_us])
-    all_bgs  = ([lbl_bg] + _status_insert[1]
+    all_bgs  = ([lbl_bg]
                 + yr_cell_bgs
                 + [bg_pct_ly, [_S]*n_rows, bg_pct_avg,
                    [_S]*n_rows, [_S]*n_rows, bg_pct_us])
-    all_fgs  = ([lbl_fg] + _status_insert[2]
+    all_fgs  = ([lbl_fg]
                 + yr_cell_fgs
                 + [fg_pct_ly, [_T]*n_rows, fg_pct_avg,
                    [_T]*n_rows, [_A]*n_rows, fg_pct_us])
 
-    col_widths = [130] + ([52] if _has_status else []) + [60]*len(years) + [70, 90, 70, 55, 55, 65]
+    col_widths = [130] + [60]*len(years) + [70, 90, 70, 55, 55, 65]
 
-    _n_text_cols = 1 + (1 if _has_status else 0)
     fig = go.Figure(go.Table(
         columnwidth=col_widths,
         header=dict(
@@ -2053,8 +2047,7 @@ def build_heatmap_table(
             values=all_vals,
             fill_color=all_bgs,
             font=dict(color=all_fgs, size=11, family="Arial"),
-            align=(["left"] + (["right"] if _has_status else [])
-                   + ["right"]*len(years) + ["right"]*6),
+            align=["left"] + ["right"]*len(years) + ["right"]*6,
             height=24,
             line_color=_BR,
         ),
@@ -3112,10 +3105,17 @@ def main():
                                 _nd_est.get(dist, {}).get(c, {}).get(_latest_yr, False)
                                 for c in _nd_ctys.get(dist, {})
                             )
-                        # District table: clean names + status passed separately
-                        _nd_row_status = {
-                            d: ("(Est)" if _dist_any_est(d) else "(USDA)")
-                            for d in _nd_yr
+                        # District cell_status: for each district/year,
+                        # True if ANY county in that district was estimated
+                        _nd_cell_status = {
+                            dist: {
+                                yr: any(
+                                    _nd_est.get(dist, {}).get(cn, {}).get(yr, False)
+                                    for cn in _nd_ctys.get(dist, {})
+                                )
+                                for yr in _HIST_YEARS
+                            }
+                            for dist in _nd_yr
                         }
                         _nt_tbl_title = (f"{nass_state} {nass_crop} — {nass_metric} "
                                          f"by ASD District ({_nt_unit}) | "
@@ -3125,7 +3125,7 @@ def main():
                             unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
                             us_totals=_nd_us if not _nt_ratio else None,
                             regions=None, fmt=_nt_fmt,
-                            row_status=_nd_row_status,
+                            cell_status=_nd_cell_status,
                         )
 
                     else:
@@ -3194,14 +3194,18 @@ def main():
                             ):
                                 if _cty_data:
                                     _cty_est_map = _nd_est.get(_dist_name, {})
-                                    # Status per county (clean names, status separate)
-                                    _cty_row_status = {
-                                        cn: ("(Est)" if _cty_est_map.get(cn, {}).get(_latest_yr, False)
-                                             else "(USDA)")
+                                    # Per-county, per-year estimated flag
+                                    _cty_cell_status = {
+                                        cn: {yr: _cty_est_map.get(cn, {}).get(yr, False)
+                                             for yr in _HIST_YEARS}
                                         for cn in _cty_data
                                     }
-                                    _dist_est    = _dist_any_est(_dist_name)
-                                    _dist_status = "(Est)" if _dist_est else "(USDA)"
+                                    # District total row: estimated if any county was estimated that year
+                                    _dist_top_cs = {
+                                        yr: any(_cty_est_map.get(cn, {}).get(yr, False)
+                                                for cn in _cty_data)
+                                        for yr in _HIST_YEARS
+                                    }
                                     _cty_fig = build_heatmap_table(
                                         _cty_data, _HIST_YEARS,
                                         title=(f"{_dist_name} — County Detail "
@@ -3211,8 +3215,8 @@ def main():
                                         fmt=_nt_fmt,
                                         top_row=_nd_yr.get(_dist_name, {}),
                                         top_row_label=f"{_dist_name} District Total",
-                                        top_row_status=_dist_status,
-                                        row_status=_cty_row_status,
+                                        cell_status=_cty_cell_status,
+                                        top_row_cell_status=_dist_top_cs,
                                     )
                                     st.plotly_chart(
                                         _cty_fig, use_container_width=True,
