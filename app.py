@@ -33,6 +33,22 @@ NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
 NASS_YEARS             = list(range(2025, 2014, -1))   # 2025 → 2015
 _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % reporting KPI
 
+# ── Grain Stocks ───────────────────────────────────────────────────────────────
+STOCKS_PERIODS = {           # display name → NASS reference_period_desc
+    "Sep 1":  "FIRST OF SEP",
+    "Dec 1":  "FIRST OF DEC",
+    "Mar 1":  "FIRST OF MAR",
+    "Jun 1":  "FIRST OF JUN",
+}
+STOCKS_VIEWS   = ["Total Stocks", "On-Farm", "Off-Farm", "% On-Farm", "% Off-Farm"]
+STOCKS_CROPS   = ["Corn", "Soybeans", "Wheat", "Sorghum"]
+STOCKS_CROP_PARAMS = {
+    "Corn":     {"commodity_desc": "CORN"},
+    "Soybeans": {"commodity_desc": "SOYBEANS"},
+    "Wheat":    {"commodity_desc": "WHEAT"},
+    "Sorghum":  {"commodity_desc": "SORGHUM"},
+}
+
 # Metrics available in the NASS tab
 NASS_METRICS     = ["Production (bu)", "Planted Acres", "Harvested Acres",
                     "% Harvested", "Yield (bu/ac)", "Prevent Plant Acres"]
@@ -648,6 +664,75 @@ def get_completed_county_production(crop: str, state: str, year: int,
     if df.empty:
         return df
     return df.rename(columns={"Value": "Production"})
+
+
+# ── Grain Stocks loader ───────────────────────────────────────────────────────
+@st.cache_data(show_spinner=False)
+def load_grain_stocks(crop: str, year: int, reference_period: str,
+                      cache_ver: str) -> pd.DataFrame:
+    """
+    Load state-level grain stocks, returning one row per state with columns:
+    State, Total, OnFarm, OffFarm, PctOnFarm, PctOffFarm.
+    All values in bushels; Pct columns in percent (0-100).
+    """
+    params = {
+        "key":                   NASS_API_KEY,
+        "source_desc":           "SURVEY",
+        "sector_desc":           "CROPS",
+        "statisticcat_desc":     "STOCKS",
+        "unit_desc":             "BU",
+        "agg_level_desc":        "STATE",
+        "domain_desc":           "TOTAL",
+        "reference_period_desc": reference_period,
+        "year":                  str(year),
+        "format":                "JSON",
+    }
+    params.update(STOCKS_CROP_PARAMS.get(crop, {"commodity_desc": crop.upper()}))
+    try:
+        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=45) as r:
+            raw = json.load(r)
+    except Exception as e:
+        st.warning(f"NASS stocks API error: {e}")
+        return pd.DataFrame()
+
+    records = raw.get("data", [])
+    if not records:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(records)
+    df["Value_num"] = pd.to_numeric(
+        df["Value"].str.replace(",", "", regex=False).str.strip(), errors="coerce"
+    )
+    df = df.dropna(subset=["Value_num"])
+    df["State"] = df["state_alpha"].str.strip()
+    df = df[df["State"].isin(set(STATE_FIPS_ALL.keys()))]
+
+    # Classify rows by short_desc
+    sdu = df["short_desc"].str.upper()
+    df_on   = df[sdu.str.contains("ON FARM",  na=False)]
+    df_off  = df[sdu.str.contains("OFF FARM", na=False)]
+    df_tot  = df[~sdu.str.contains("ON FARM|OFF FARM", na=False)]
+
+    on_map  = df_on.groupby("State")["Value_num"].sum().to_dict()
+    off_map = df_off.groupby("State")["Value_num"].sum().to_dict()
+    tot_map = df_tot.groupby("State")["Value_num"].sum().to_dict()
+
+    states  = set(tot_map) | set(on_map) | set(off_map)
+    rows    = []
+    for st in states:
+        tot = tot_map.get(st, 0)
+        on  = on_map.get(st, 0)
+        off = off_map.get(st, 0)
+        rows.append({
+            "State":      st,
+            "Total":      tot,
+            "OnFarm":     on,
+            "OffFarm":    off,
+            "PctOnFarm":  (on  / tot * 100) if tot > 0 else None,
+            "PctOffFarm": (off / tot * 100) if tot > 0 else None,
+        })
+    return pd.DataFrame(rows).sort_values("State").reset_index(drop=True)
 
 
 # ── ASD district boundary helpers ────────────────────────────────────────────
@@ -1969,7 +2054,10 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_nass, tab_rma, tab_about = st.tabs(["🌾  NASS Production", "📋  RMA", "📖  About the Data"])
+    tab_nass, tab_rma, tab_stocks, tab_about = st.tabs([
+        "🌾  NASS Production", "📋  RMA",
+        "📦  Grain Stocks", "📖  About the Data",
+    ])
 
     # ══════════════════════════════════════════════════════════════════════════
     # NASS TAB
@@ -2791,6 +2879,156 @@ def main():
                 )
                 st.dataframe(disp, use_container_width=True, hide_index=True)
 
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # GRAIN STOCKS TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_stocks:
+        # ── Controls ──────────────────────────────────────────────────────────
+        sc1, sc2, sc3, sc4, sc5 = st.columns([1, 0.9, 1.1, 1.8, 0.55])
+        with sc1:
+            stk_crop = st.selectbox("Crop", STOCKS_CROPS, key="stk_crop")
+        with sc2:
+            stk_year = st.selectbox("Year", NASS_YEARS, index=0, key="stk_year")
+        with sc3:
+            stk_period_lbl = st.selectbox("Period", list(STOCKS_PERIODS.keys()),
+                                          index=1, key="stk_period")  # Dec 1 default
+            stk_period = STOCKS_PERIODS[stk_period_lbl]
+        with sc4:
+            stk_view = st.radio(
+                "Storage", STOCKS_VIEWS, horizontal=True, key="stk_view",
+                label_visibility="collapsed",
+            )
+        with sc5:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Refresh", use_container_width=True, key="stk_refresh"):
+                st.cache_data.clear(); st.rerun()
+
+        # ── Load data ─────────────────────────────────────────────────────────
+        with st.spinner(f"Loading {stk_year} {stk_crop} stocks ({stk_period_lbl})…"):
+            stk_df = load_grain_stocks(stk_crop, stk_year, stk_period, _CACHE_VERSION)
+
+        if stk_df.empty:
+            st.info(
+                f"No {stk_crop} stocks data available for {stk_year} {stk_period_lbl}. "
+                "NASS publishes quarterly stocks — data may not yet be released for this period."
+            )
+        else:
+            # ── Determine which column to map ─────────────────────────────────
+            _stk_col_map = {
+                "Total Stocks": ("Total",      "YlOrBr",  "bu"),
+                "On-Farm":      ("OnFarm",     "YlGn",    "bu"),
+                "Off-Farm":     ("OffFarm",    "YlOrRd",  "bu"),
+                "% On-Farm":    ("PctOnFarm",  "RdYlGn",  "%"),
+                "% Off-Farm":   ("PctOffFarm", "RdYlBu",  "%"),
+            }
+            _col, _cscale, _unit = _stk_col_map[stk_view]
+            stk_df["StateName"] = stk_df["State"].map(ABBR_TO_NAME)
+            _is_pct = _unit == "%"
+
+            # ── KPI cards ─────────────────────────────────────────────────────
+            _us_total  = stk_df["Total"].sum()
+            _us_on     = stk_df["OnFarm"].sum()
+            _us_off    = stk_df["OffFarm"].sum()
+            _us_pct_on = _us_on  / _us_total * 100 if _us_total > 0 else 0
+            _us_pct_off= _us_off / _us_total * 100 if _us_total > 0 else 0
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            def _bu_fmt(v):
+                return f"{v/1e9:.2f}B bu" if v >= 1e9 else f"{v/1e6:.0f}M bu"
+            k1.metric(f"US Total Stocks",  _bu_fmt(_us_total))
+            k2.metric(f"On-Farm",           _bu_fmt(_us_on),
+                      f"{_us_pct_on:.1f}% of total")
+            k3.metric(f"Off-Farm",          _bu_fmt(_us_off),
+                      f"{_us_pct_off:.1f}% of total")
+            k4.metric("States Reporting",  f"{stk_df['State'].nunique()}")
+            k5.metric("Period",            f"{stk_period_lbl} {stk_year}")
+
+            st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
+                        unsafe_allow_html=True)
+
+            # ── State choropleth map ──────────────────────────────────────────
+            _plot_df = stk_df.dropna(subset=[_col]).copy()
+            _z_vals  = _plot_df[_col].tolist()
+            _z_min   = min(_z_vals) if _z_vals else 0
+            _z_max   = max(_z_vals) if _z_vals else 1
+
+            _hover_sfx = "%" if _is_pct else " bu"
+            _hover_fmt = ":.1f" if _is_pct else ":,.0f"
+
+            stk_fig = px.choropleth(
+                _plot_df,
+                locations="State", locationmode="USA-states",
+                color=_col, scope="usa",
+                color_continuous_scale=_cscale,
+                hover_name="StateName",
+                hover_data={_col: _hover_fmt, "State": False},
+                labels={_col: stk_view},
+            )
+            stk_fig.update_layout(
+                **_base_layout(
+                    f"{stk_year} {stk_crop} — {stk_view} | {stk_period_lbl}"
+                ),
+                height=520,
+                dragmode=False,
+                geo=dict(showlakes=False, bgcolor=DARK, landcolor=LAND,
+                         showframe=False, projection_type="albers usa"),
+                coloraxis_colorbar=dict(
+                    title=dict(text=f"{stk_view}<br>({_unit})", font=dict(color=TEXT)),
+                    tickfont=dict(color=TEXT),
+                ),
+            )
+            # State labels
+            _lbl_lons, _lbl_lats, _lbl_texts = [], [], []
+            for _, row in _plot_df.iterrows():
+                if row["State"] in STATE_CENTROIDS:
+                    _v = row[_col]
+                    _lbl = f"{_v:.1f}%" if _is_pct else _bu_fmt(_v)
+                    _lbl_lons.append(STATE_CENTROIDS[row["State"]][0])
+                    _lbl_lats.append(STATE_CENTROIDS[row["State"]][1])
+                    _lbl_texts.append(_lbl)
+            if _lbl_lons:
+                stk_fig.add_trace(go.Scattergeo(
+                    lon=_lbl_lons, lat=_lbl_lats, text=_lbl_texts, mode="text",
+                    textfont=dict(color="#cccccc", size=10, family="Arial Black"),
+                    showlegend=False, hoverinfo="skip", geo="geo",
+                ))
+            _add_logo(stk_fig, logo_50yr, size=0.30, opacity=1.0)
+            stk_fig.update_layout(dragmode=False)
+            st.plotly_chart(stk_fig, use_container_width=True, key="stk_map",
+                            config={"scrollZoom": False, "displayModeBar": False,
+                                    "doubleClick": False})
+
+            st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
+                        unsafe_allow_html=True)
+
+            # ── State data table ──────────────────────────────────────────────
+            st.markdown(
+                f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
+                f"margin:0 0 6px 0;letter-spacing:0.04em;'>"
+                f"📋 STATE DETAIL — {stk_year} {stk_crop} STOCKS | {stk_period_lbl}</p>",
+                unsafe_allow_html=True,
+            )
+            _tbl = stk_df[["State", "Total", "OnFarm", "OffFarm",
+                            "PctOnFarm", "PctOffFarm"]].copy()
+            _tbl.insert(0, "State Name", _tbl["State"].map(ABBR_TO_NAME))
+            for _c in ("Total", "OnFarm", "OffFarm"):
+                _tbl[_c] = _tbl[_c].apply(
+                    lambda v: _bu_fmt(v) if pd.notna(v) and v > 0 else "—"
+                )
+            for _c in ("PctOnFarm", "PctOffFarm"):
+                _tbl[_c] = _tbl[_c].apply(
+                    lambda v: f"{v:.1f}%" if pd.notna(v) else "—"
+                )
+            _tbl.columns = ["State Name", "Abbr",
+                             "Total Stocks", "On-Farm", "Off-Farm",
+                             "% On-Farm", "% Off-Farm"]
+            st.dataframe(_tbl, use_container_width=True, hide_index=True)
+            st.caption(
+                "Source: USDA NASS Grain Stocks Survey. "
+                "Published quarterly at the state level — "
+                "county and district breakdowns are not available."
+            )
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABOUT THE DATA TAB
