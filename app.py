@@ -3090,6 +3090,44 @@ def main():
                         "Olympic Avg drops single highest and lowest year."
                     )
 
+                    # ── ASD county lookup dropdown ─────────────────────────────
+                    if _htbl_scope == "ASD District":
+                        # Build district → sorted county list from fips_map + GeoJSON
+                        _sfips_val = STATE_FIPS_ALL.get(nass_state, "")
+                        _fips_to_name = {
+                            f["properties"]["STATE"] + f["properties"]["COUNTY"]:
+                            f["properties"]["NAME"]
+                            for f in geo["features"]
+                            if f["properties"]["STATE"] == _sfips_val
+                        }
+                        _dist_county_map: dict = {}
+                        for _fips, (_dname, _dcode) in _fips_map.items():
+                            if not _dname or not _fips.startswith(_sfips_val):
+                                continue
+                            _cname = _fips_to_name.get(_fips, _fips)
+                            _dist_county_map.setdefault(_dname, []).append(_cname)
+                        for _d in _dist_county_map:
+                            _dist_county_map[_d] = sorted(set(_dist_county_map[_d]))
+
+                        if _dist_county_map:
+                            _sel_asd = st.selectbox(
+                                "View counties in district",
+                                sorted(_dist_county_map.keys()),
+                                key="nass_asd_county_drp",
+                            )
+                            if _sel_asd:
+                                _cnty_list = _dist_county_map.get(_sel_asd, [])
+                                st.markdown(
+                                    f"<p style='color:{MUTED};font-size:0.82rem;"
+                                    f"margin:4px 0 2px 0;'>"
+                                    f"<b style='color:{TEXT};'>{_sel_asd}</b> — "
+                                    f"{len(_cnty_list)} counties</p>"
+                                    f"<p style='color:{TEXT};font-size:0.84rem;"
+                                    f"margin:0;'>"
+                                    + "  ·  ".join(_cnty_list) + "</p>",
+                                    unsafe_allow_html=True,
+                                )
+
                     # Per-state detail (ASD District / County) in expander
                     with st.expander(
                         f"📋 {_state_full} Detail — {nass_metric} "
