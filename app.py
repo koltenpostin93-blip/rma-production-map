@@ -766,7 +766,8 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
                              dist_gdf: gpd.GeoDataFrame,
                              state: str, crop: str, year: int,
                              metric: str, change_view: str,
-                             logo_50yr, geo=None) -> go.Figure:
+                             logo_50yr, geo=None,
+                             estimated_districts: set = None) -> go.Figure:
     """Build a state choropleth coloured by ASD district with county outlines,
     bold district boundaries, and labels showing metric value + % change."""
     if dist_gdf.empty or dist_view_df.empty:
@@ -862,12 +863,15 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
 
         # Label line 1: district name
         # Label line 2: metric value (always)
-        # Label line 3: % change (comparison modes only)
+        # Add ⚑ marker to districts with estimated counties
+        _est_flag = (
+            " ⚑" if (estimated_districts and _dn in estimated_districts) else ""
+        )
         if change_view != "Current Year" and _dv is not None:
             _sign = "+" if _dv >= 0 else ""
-            _lbl  = f"{_dn.upper()}<br>{_sign}{_dv:.1f}%"
+            _lbl  = f"{_dn.upper()}{_est_flag}<br>{_sign}{_dv:.1f}%"
         else:
-            _lbl  = f"{_dn.upper()}<br>{_rv_s}"
+            _lbl  = f"{_dn.upper()}{_est_flag}<br>{_rv_s}"
 
         lbl_lons.append(row["centroid_lon"])
         lbl_lats.append(row["centroid_lat"])
@@ -918,9 +922,20 @@ def cached_nass_district_fig(state: str, crop: str, year: int,
     dist_gdf = build_nass_district_gdf(
         STATE_FIPS_ALL.get(state, ""), cache_ver, _fips_map, _geo
     )
+    # Build set of districts that contain at least one estimated county
+    if metric == "Production (bu)":
+        _comp = get_completed_county_production(crop, state, year, cache_ver)
+        estimated_districts = (
+            set(_comp[_comp["is_estimated"]]["District"].dropna().unique())
+            if not _comp.empty else set()
+        )
+    else:
+        estimated_districts = set()
+
     return build_nass_district_fig(
         dist_view_df, dist_raw_df, dist_gdf,
         state, crop, year, metric, change_view, _logo_50yr, _geo,
+        estimated_districts=estimated_districts,
     )
 
 
@@ -2080,6 +2095,26 @@ def main():
                                 if not _is_yield and _st_total > 0
                                 else "—"
                             )
+
+                            # Per-district estimated county count
+                            if nass_metric == "Production (bu)" and not _comp_data.empty:
+                                _est_by_dist = (
+                                    _comp_data[_comp_data["is_estimated"]]
+                                    .groupby("District")["is_estimated"]
+                                    .count()
+                                    .reset_index()
+                                    .rename(columns={"is_estimated": "Est. Cty ⚑"})
+                                )
+                                _dt = _dt.merge(_est_by_dist, on="District", how="left")
+                                _dt["Est. Cty ⚑"] = _dt["Est. Cty ⚑"].fillna(0).astype(int)
+                                _dt["Est. Cty ⚑"] = _dt["Est. Cty ⚑"].apply(
+                                    lambda n: str(n) if n > 0 else "—"
+                                )
+                                _tbl_cols = ["District", "ASD", nass_metric,
+                                             "% of State", "Est. Cty ⚑"]
+                            else:
+                                _tbl_cols = ["District", "ASD", nass_metric, "% of State"]
+
                             _tbl_col, _map_col = st.columns([1, 2.5])
                             with _tbl_col:
                                 st.markdown(
@@ -2090,23 +2125,22 @@ def main():
                                     unsafe_allow_html=True,
                                 )
                                 st.dataframe(
-                                    _dt[["District", "ASD", nass_metric, "% of State"]],
+                                    _dt[_tbl_cols],
                                     use_container_width=True, hide_index=True,
                                 )
-                                _km1, _km2, _km3 = st.columns(3)
+                                if _n_est > 0:
+                                    st.caption(
+                                        f"⚑ = includes estimated counties. "
+                                        f"Production for unreported counties is estimated "
+                                        f"using historical district-share averages and "
+                                        f"scaled to match the NASS 'Other Counties' figure."
+                                    )
+                                _km1, _km2 = st.columns(2)
                                 _km1.metric(
                                     "State Avg" if _is_yield else "State Total",
                                     _abs_cfg_d["label_fn"](_st_total),
                                 )
                                 _km2.metric("Districts", f"{len(_dt)}")
-                                if _n_est > 0:
-                                    _km3.metric(
-                                        "⚑ Estimated Cty",
-                                        f"{_n_est}",
-                                        help="Counties where NASS hasn't published "
-                                             "data yet — estimated via Tier-2 "
-                                             "neighbor-weighted historical shares.",
-                                    )
                         else:
                             _map_col = st.container()
 
