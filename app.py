@@ -3100,18 +3100,43 @@ def main():
                     st.plotly_chart(_nt_fig, use_container_width=True,
                                     key="nass_heatmap_tbl",
                                     config={"displayModeBar": False})
-                    st.caption(
-                        "Top 2 = green  ·  Bottom 2 = red per row  ·  "
-                        "Olympic Avg drops single highest and lowest year."
-                    )
 
-                    # ── ASD county drill-down expanders ───────────────────────
-                    if _htbl_scope == "ASD District" and "_nd_ctys" in dir():
+                    # ── ASD county drill-down — tight expanders below table ───
+                    if _htbl_scope == "ASD District" and "_nd_ctys" in dir() and _nd_ctys:
+                        # CSS: remove gap between table and expanders, style to match
+                        st.markdown(
+                            f"""<style>
+                            /* tighten the first expander right under the table */
+                            div[data-testid="stExpander"] {{
+                                background-color: {PANEL};
+                                border: 1px solid {BORDER};
+                                border-radius: 0 !important;
+                                margin-top: 0 !important;
+                                margin-bottom: 1px !important;
+                            }}
+                            div[data-testid="stExpander"] summary {{
+                                background-color: {PANEL};
+                                color: {TEXT};
+                                font-size: 0.85rem;
+                                font-family: Arial, sans-serif;
+                                padding: 6px 12px;
+                            }}
+                            div[data-testid="stExpander"] summary:hover {{
+                                background-color: {BORDER};
+                            }}
+                            </style>""",
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(
+                            "▼ Expand any district below to view county detail  ·  "
+                            "Top 2 = green  ·  Bottom 2 = red per row  ·  "
+                            "Olympic Avg drops single highest and lowest year."
+                        )
                         for _dist_name in sorted(_nd_ctys.keys()):
-                            _cty_data = _nd_ctys[_dist_name]
+                            _cty_data = _nd_ctys.get(_dist_name, {})
                             _n_cty    = len(_cty_data)
                             with st.expander(
-                                f"📍 {_dist_name} — {_n_cty} counties",
+                                f"▼  {_dist_name}  —  {_n_cty} counties",
                                 expanded=False,
                             ):
                                 if _cty_data:
@@ -3129,7 +3154,12 @@ def main():
                                         config={"displayModeBar": False},
                                     )
                                 else:
-                                    st.info("No county data available for this district.")
+                                    st.info("No county data for this district.")
+                    else:
+                        st.caption(
+                            "Top 2 = green  ·  Bottom 2 = red per row  ·  "
+                            "Olympic Avg drops single highest and lowest year."
+                        )
 
                     # Per-state detail (ASD District / County) in expander
                     with st.expander(
