@@ -3031,18 +3031,19 @@ def main():
                     _nt_stat  = _METRIC_TO_STAT.get(nass_metric, "production")
                     _nt_ratio = nass_metric in ("Yield (bu/ac)", "% Harvested")
                     _nt_units = {
-                        "Production (bu)":"100K bu","Planted Acres":"M ac",
-                        "Harvested Acres":"M ac","% Harvested":"%",
-                        "Yield (bu/ac)":"bu/ac","Prevent Plant Acres":"M ac",
+                        "Production (bu)":"M bu",   # M bu matches map labels exactly
+                        "Planted Acres":"M ac","Harvested Acres":"M ac",
+                        "% Harvested":"%","Yield (bu/ac)":"bu/ac",
+                        "Prevent Plant Acres":"M ac",
                     }
                     _nt_divs  = {
-                        "Production (bu)":1e5,   # 100K bu units
+                        "Production (bu)":1e6,      # M bu; .1f = nearest 100K bu
                         "Planted Acres":1e6,"Harvested Acres":1e6,"% Harvested":1,
                         "Yield (bu/ac)":1,"Prevent Plant Acres":1e6,
                     }
-                    _nt_unit  = _nt_units.get(nass_metric, "100K bu")
-                    _nt_div   = _nt_divs.get(nass_metric, 1e5)
-                    _nt_fmt   = ",.0f" if nass_metric == "Production (bu)" else ".1f"
+                    _nt_unit  = _nt_units.get(nass_metric, "M bu")
+                    _nt_div   = _nt_divs.get(nass_metric, 1e6)
+                    _nt_fmt   = ".1f"   # 1 decimal for all metrics
 
                     if _htbl_scope == "State":
                         # National all-states heatmap
