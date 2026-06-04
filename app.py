@@ -30,7 +30,7 @@ LOGO_FULL  = HERE / "assets" / "logo-full.png"
 # ── NASS API ───────────────────────────────────────────────────────────────────
 NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
 NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
-NASS_YEARS             = list(range(2025, 2014, -1))   # 2025 → 2015
+NASS_YEARS             = list(range(2026, 2014, -1))   # 2026 → 2015
 _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % reporting KPI
 
 # ── Grain Stocks ───────────────────────────────────────────────────────────────
