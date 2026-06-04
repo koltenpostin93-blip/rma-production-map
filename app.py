@@ -432,6 +432,228 @@ def load_nass_county(crop: str, year: int = 2025,
     return df[key + ["Production"] + extra].reset_index(drop=True)
 
 
+# ── Tier-2 county production estimation ──────────────────────────────────────
+# Fills in counties suppressed by NASS using neighbor-weighted historical shares
+# so ASD district totals reconcile to the official state total.
+
+@st.cache_data(show_spinner=False)
+def _load_county_raw_for_est(crop: str, state: str, year: int,
+                              cache_ver: str) -> pd.DataFrame:
+    """County production rows INCLUDING the OTHER COUNTIES catch-all.
+    Used only for the estimation pipeline."""
+    params = {
+        "key": NASS_API_KEY, "source_desc": "SURVEY", "sector_desc": "CROPS",
+        "statisticcat_desc": "PRODUCTION", "unit_desc": "BU",
+        "agg_level_desc": "COUNTY", "domain_desc": "TOTAL",
+        "state_alpha": state, "year": str(year), "format": "JSON",
+    }
+    params.update(NASS_CROP_PARAMS[crop])
+    try:
+        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=45) as r:
+            raw = json.load(r)
+    except Exception:
+        return pd.DataFrame()
+    records = raw.get("data", [])
+    if not records:
+        return pd.DataFrame()
+    df = pd.DataFrame(records)
+    needed = ["state_alpha", "county_name", "county_ansi", "state_fips_code",
+              "asd_desc", "asd_code", "prodn_practice_desc", "Value"]
+    df = df[[c for c in needed if c in df.columns]].copy()
+    df["Value_num"] = pd.to_numeric(
+        df["Value"].str.replace(",", "", regex=False).str.strip(), errors="coerce"
+    ).fillna(0)
+    df["fips"]    = df["state_fips_code"].str.zfill(2) + df["county_ansi"].str.zfill(3)
+    df["State"]   = df["state_alpha"].str.strip()
+    df["County"]  = df["county_name"].str.strip().str.title()
+    df["ANSI"]    = df["county_ansi"].str.strip().str.zfill(3)
+    df["District"]     = df["asd_desc"].str.strip().str.title() if "asd_desc"  in df.columns else ""
+    df["DistrictCode"] = df["asd_code"].str.strip()              if "asd_code"  in df.columns else ""
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def _build_hist_shares(crop: str, state: str, history_years: tuple,
+                       cache_ver: str) -> pd.DataFrame:
+    """Olympic-average historical share (county / state_total) per county.
+    history_years is a tuple so it's hashable as a cache key."""
+    rows = []
+    for yr in history_years:
+        st_total = load_nass_state(crop, yr, "production", cache_ver)
+        if st_total.empty or "State" not in st_total.columns:
+            continue
+        st_row = st_total[st_total["State"] == state]
+        if st_row.empty:
+            continue
+        st_val = float(st_row["Value"].iloc[0])
+        if st_val <= 0:
+            continue
+        df = _load_county_raw_for_est(crop, state, yr, cache_ver)
+        if df.empty:
+            continue
+        named = df[
+            (~df["ANSI"].isin(["998", "000", "999"])) &
+            (~df["County"].str.lower().str.startswith("other", na=False))
+        ].copy()
+        if "prodn_practice_desc" in named.columns:
+            named = named[named["prodn_practice_desc"] == "ALL PRODUCTION PRACTICES"]
+        named = named.loc[named.groupby("fips")["Value_num"].idxmax()]
+        for _, row in named.iterrows():
+            rows.append({
+                "fips":         row["fips"],
+                "County":       row["County"],
+                "District":     row.get("District", ""),
+                "DistrictCode": row.get("DistrictCode", ""),
+                "year":         yr,
+                "share":        row["Value_num"] / st_val,
+            })
+    if not rows:
+        return pd.DataFrame()
+    hist = pd.DataFrame(rows)
+
+    def _olympic(vals):
+        v = sorted(vals)
+        return float(np.mean(v[1:-1] if len(v) >= 4 else v))
+
+    result = (
+        hist.groupby(["fips", "County"])
+        .apply(lambda g: pd.Series({
+            "hist_share":    _olympic(g["share"].tolist()),
+            "n_obs":         len(g),
+            "District":      g["District"].mode().iloc[0]     if len(g) > 0 else "",
+            "DistrictCode":  g["DistrictCode"].mode().iloc[0] if len(g) > 0 else "",
+        }), include_groups=False)
+        .reset_index()
+    )
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def _build_adj(state_fips: str, cache_ver: str, _geo: dict) -> dict:
+    """County adjacency map {fips: [neighbor_fips,...]} via geopandas."""
+    feats = [f for f in _geo["features"] if f["properties"]["STATE"] == state_fips]
+    if not feats:
+        return {}
+    rows, geoms = [], []
+    for f in feats:
+        try:
+            geoms.append(shape(f["geometry"]).buffer(0.001))
+            rows.append({"fips": f["properties"]["STATE"] + f["properties"]["COUNTY"]})
+        except Exception:
+            continue
+    gdf = gpd.GeoDataFrame(rows, geometry=geoms, crs="EPSG:4326")
+    joined = gpd.sjoin(gdf, gdf, how="left", predicate="intersects")
+    joined = joined[joined["fips_left"] != joined["fips_right"]]
+    adj: dict = {}
+    for _, row in joined.iterrows():
+        adj.setdefault(row["fips_left"], []).append(row["fips_right"])
+    return adj
+
+
+@st.cache_data(show_spinner=False)
+def get_completed_county_production(crop: str, state: str, year: int,
+                                    cache_ver: str, _geo: dict) -> pd.DataFrame:
+    """
+    Returns county-level production for the state with missing counties filled
+    in using Tier-2 neighbor-weighted estimation.
+
+    Columns: fips, County, District, DistrictCode, Production, is_estimated
+    named + estimated sums = official state total exactly.
+    """
+    # ── Load current year data ──────────────────────────────────────────────
+    raw = _load_county_raw_for_est(crop, state, year, cache_ver)
+    if raw.empty:
+        return pd.DataFrame()
+
+    state_total_df = load_nass_state(crop, year, "production", cache_ver)
+    if state_total_df.empty or "State" not in state_total_df.columns:
+        return pd.DataFrame()
+    st_row = state_total_df[state_total_df["State"] == state]
+    if st_row.empty:
+        return pd.DataFrame()
+    state_total = float(st_row["Value"].iloc[0])
+
+    is_other  = raw["County"].str.lower().str.startswith("other", na=False)
+    other_tot = raw[is_other]["Value_num"].sum()
+    named     = raw[~is_other & ~raw["ANSI"].isin(["998","000","999"])].copy()
+    if "prodn_practice_desc" in named.columns:
+        named = named[named["prodn_practice_desc"] == "ALL PRODUCTION PRACTICES"]
+    named = named.loc[named.groupby("fips")["Value_num"].idxmax()]
+    named["is_estimated"] = False
+
+    if other_tot <= 0:
+        named["Production"] = named["Value_num"]
+        return named[["fips","County","District","DistrictCode","Production","is_estimated"]]
+
+    # ── Build historical shares (up to 8 prior years) ─────────────────────
+    hist_yrs = tuple(range(max(year - 8, 2015), year))
+    hist_shares = _build_hist_shares(crop, state, hist_yrs, cache_ver)
+    if hist_shares.empty:
+        named["Production"] = named["Value_num"]
+        return named[["fips","County","District","DistrictCode","Production","is_estimated"]]
+
+    named_fips = set(named["fips"])
+    missing = hist_shares[~hist_shares["fips"].isin(named_fips)].copy()
+    if missing.empty:
+        named["Production"] = named["Value_num"]
+        return named[["fips","County","District","DistrictCode","Production","is_estimated"]]
+
+    # ── Deviation ratios for reported counties ────────────────────────────
+    hs_map = dict(zip(hist_shares["fips"], hist_shares["hist_share"]))
+    dev = {
+        row["fips"]: row["Value_num"] / (hs_map[row["fips"]] * state_total)
+        for _, row in named.iterrows()
+        if row["fips"] in hs_map and hs_map[row["fips"]] > 0
+    }
+
+    # District fallback ratios
+    named_r = named.copy(); named_r["ratio"] = named_r["fips"].map(dev)
+    dist_ratio = named_r.dropna(subset=["ratio"]).groupby("District")["ratio"].mean().to_dict()
+    state_ratio = float(np.mean(list(dev.values()))) if dev else 1.0
+
+    # ── Tier-2 neighbor-weighted multiplier ───────────────────────────────
+    sfips = STATE_FIPS_ALL.get(state, "")
+    adj   = _build_adj(sfips, cache_ver, _geo)
+
+    mults = []
+    for _, row in missing.iterrows():
+        fips = row["fips"]
+        visited, frontier = {fips}, {fips}
+        hop_ratios = []
+        for hop in range(1, 3):
+            nf = set()
+            for f in frontier:
+                for nb in adj.get(f, []):
+                    if nb not in visited:
+                        visited.add(nb); nf.add(nb)
+                        if nb in dev:
+                            hop_ratios.append((dev[nb], 1.0 / hop))
+            frontier = nf
+        if hop_ratios:
+            tw = sum(w for _, w in hop_ratios)
+            mults.append(sum(r * w for r, w in hop_ratios) / tw)
+        else:
+            mults.append(dist_ratio.get(row.get("District", ""), state_ratio))
+
+    missing = missing.copy()
+    missing["raw_est"] = missing["hist_share"] * state_total * pd.Series(mults, index=missing.index)
+
+    # ── Scale to reconcile with OTHER COUNTIES ────────────────────────────
+    raw_sum = missing["raw_est"].sum()
+    scale   = (other_tot / raw_sum) if raw_sum > 0 else 1.0
+    missing["Production"]   = missing["raw_est"] * scale
+    missing["is_estimated"] = True
+
+    # ── Combine ───────────────────────────────────────────────────────────
+    named["Production"] = named["Value_num"]
+    out = pd.concat([
+        named[["fips","County","District","DistrictCode","Production","is_estimated"]],
+        missing[["fips","County","District","DistrictCode","Production","is_estimated"]],
+    ], ignore_index=True)
+    return out
+
+
 # ── ASD district boundary helpers ────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_boundary_fips_map(crop: str, state_fips: str,
@@ -502,27 +724,38 @@ def build_nass_district_gdf(state_fips: str, cache_ver: str,
 
 def get_nass_district_view_data(crop: str, year: int, metric: str,
                                  change_view: str, fips_map: dict,
-                                 state: str, comp_year=None) -> pd.DataFrame:
+                                 state: str, comp_year=None,
+                                 _geo=None) -> pd.DataFrame:
     """
     Returns [District, Value] aggregated from county-level NASS data,
     computing proper district-level % change for non-absolute views.
+    For Production + Current Year, uses Tier-2 estimated county data so
+    district totals reconcile to the official state total.
     """
     stat_type = _METRIC_TO_STAT[metric]
+    use_est   = (metric == "Production (bu)" and change_view == "Current Year"
+                 and _geo is not None)
 
-    def _load_state(yr):
-        df = _load_for_metric(crop, yr, stat_type)
-        if df.empty or "State" not in df.columns:
-            return pd.DataFrame(columns=["fips", "Value"])
-        df_s = df[df["State"] == state].copy()
-        df_s["District"] = df_s["fips"].map(lambda f: fips_map.get(f, (None, None))[0])
-        return df_s.dropna(subset=["District"])
+    def _load_state(yr, use_estimation=False):
+        if use_estimation:
+            df = get_completed_county_production(crop, state, yr, _CACHE_VERSION, _geo)
+            if df.empty:
+                return pd.DataFrame(columns=["fips", "Value"])
+            df = df.rename(columns={"Production": "Value"})
+        else:
+            df = _load_for_metric(crop, yr, stat_type)
+            if df.empty or "State" not in df.columns:
+                return pd.DataFrame(columns=["fips", "Value"])
+            df = df[df["State"] == state].copy()
+        df["District"] = df["fips"].map(lambda f: fips_map.get(f, (None, None))[0])
+        return df.dropna(subset=["District"])
 
     def _agg(df):
         if metric == "Yield (bu/ac)":
             return df.groupby("District")["Value"].mean()
         return df.groupby("District")["Value"].sum()
 
-    cur = _agg(_load_state(year))
+    cur = _agg(_load_state(year, use_estimation=use_est))
 
     if change_view == "Current Year" or cur.empty:
         return cur.reset_index()
@@ -688,14 +921,16 @@ def cached_nass_district_fig(state: str, crop: str, year: int,
                               comp_year: int, cache_ver: str,
                               _geo, _logo_50yr, _fips_map):
     # View data (absolute or % change depending on change_view)
+    # Pass _geo so production "Current Year" can use Tier-2 estimated counties
     dist_view_df = get_nass_district_view_data(
         crop, year, metric, change_view, _fips_map, state,
         comp_year if comp_year > 0 else None,
+        _geo=_geo,
     )
-    # Raw absolute values — always loaded so labels can show the metric value
-    # alongside % change in comparison modes
+    # Raw absolute values for labels — always "Current Year" absolute
     dist_raw_df = get_nass_district_view_data(
         crop, year, metric, "Current Year", _fips_map, state, None,
+        _geo=_geo,
     ) if change_view != "Current Year" else dist_view_df
 
     dist_gdf = build_nass_district_gdf(
@@ -1815,10 +2050,19 @@ def main():
                     # ── Map ───────────────────────────────────────────────────
                     if nass_map_view == "ASD District":
                         # Current-year absolute district values for the side table
+                        # Pass geo so production uses Tier-2 estimated counties
                         _dist_abs  = get_nass_district_view_data(
                             nass_crop, nass_year, nass_metric, "Current Year",
-                            _fips_map, nass_state, None,
+                            _fips_map, nass_state, None, _geo=geo,
                         )
+                        # Estimated county count badge (production only)
+                        if nass_metric == "Production (bu)":
+                            _comp_data = get_completed_county_production(
+                                nass_crop, nass_state, nass_year, _CACHE_VERSION, geo
+                            )
+                            _n_est = int(_comp_data["is_estimated"].sum()) if not _comp_data.empty else 0
+                        else:
+                            _n_est = 0
                         _abs_cfg_d = _nass_view_cfg(nass_metric, "Current Year")
                         _is_yield  = nass_metric == "Yield (bu/ac)"
 
@@ -1855,12 +2099,20 @@ def main():
                                     _dt[["District", "ASD", nass_metric, "% of State"]],
                                     use_container_width=True, hide_index=True,
                                 )
-                                _km1, _km2 = st.columns(2)
+                                _km1, _km2, _km3 = st.columns(3)
                                 _km1.metric(
                                     "State Avg" if _is_yield else "State Total",
                                     _abs_cfg_d["label_fn"](_st_total),
                                 )
                                 _km2.metric("Districts", f"{len(_dt)}")
+                                if _n_est > 0:
+                                    _km3.metric(
+                                        "⚑ Estimated Cty",
+                                        f"{_n_est}",
+                                        help="Counties where NASS hasn't published "
+                                             "data yet — estimated via Tier-2 "
+                                             "neighbor-weighted historical shares.",
+                                    )
                         else:
                             _map_col = st.container()
 
