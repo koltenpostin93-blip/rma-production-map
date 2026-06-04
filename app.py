@@ -2032,18 +2032,30 @@ def build_heatmap_table(
 def build_history_bar(series_dict: dict, years: list, title: str,
                        y_label: str = "", stacked: bool = False) -> go.Figure:
     """
-    Build a stacked or grouped bar chart.
+    Build a stacked or grouped bar chart with data labels at column tops.
     series_dict: {series_name: [value_per_year, ...]}  — values in display units
     years: list of year ints (x-axis)
     """
     _SERIES_COLORS = ["#4ade80", "#60a5fa", "#f59e0b", "#f87171",
                       "#a78bfa", "#34d399", "#fb923c"]
+    series_list = list(series_dict.items())
+    n_series     = len(series_list)
+    # Pre-compute column totals for top labels
+    col_totals = [sum(series_list[s][1][c] or 0 for s in range(n_series))
+                  for c in range(len(years))]
+
     fig = go.Figure()
-    for i, (name, vals) in enumerate(series_dict.items()):
+    for i, (name, vals) in enumerate(series_list):
+        is_top = (i == n_series - 1)   # last trace = top of stack
         fig.add_trace(go.Bar(
             x=years, y=vals, name=name,
             marker_color=_SERIES_COLORS[i % len(_SERIES_COLORS)],
             marker_line_width=0,
+            # Show total label on top of last trace (stacked) or every bar (grouped)
+            text=[f"{t:.2f}" for t in (col_totals if stacked and is_top else vals)],
+            textposition="outside" if (not stacked or is_top) else "none",
+            textfont=dict(color=TEXT, size=9),
+            cliponaxis=False,
         ))
     layout = _base_layout(title)
     layout.update(
@@ -2990,7 +3002,7 @@ def main():
                     }
                     _nt_unit  = _nt_units.get(nass_metric, "M bu")
                     _nt_div   = _nt_divs.get(nass_metric, 1e6)
-                    _nt_fmt   = ".1f" if _nt_ratio else ",.0f"
+                    _nt_fmt   = ".1f"   # 1 decimal = nearest 100K bu in display units
 
                     with st.spinner("Building national table…"):
                         _nt_state_yr: dict = {}
@@ -3551,13 +3563,21 @@ def main():
                     y_label="Billion bu", stacked=True,
                 )
             elif stk_view == "Total Supply":
+                # Sep 1 stocks must always use FIRST OF SEP regardless of selected period
+                _sep_chart = {
+                    y: load_grain_stocks(stk_crop, y, "FIRST OF SEP", _CACHE_VERSION)
+                    for y in _chart_yrs
+                }
                 _chart_fig = build_history_bar(
                     {
-                        "Sep 1 Stocks": [_us_col(_cyr_dfs[y], "Total")      / 1e9 for y in _chart_yrs],
-                        "Production":   [_us_col(_cyr_dfs[y], "Production") / 1e9 for y in _chart_yrs],
+                        "Sep 1 Stocks": [
+                            (_sep_chart[y]["Total"].sum() / 1e9 if not _sep_chart[y].empty else 0)
+                            for y in _chart_yrs
+                        ],
+                        "Production": [_us_col(_cyr_dfs[y], "Production") / 1e9 for y in _chart_yrs],
                     },
                     _chart_yrs,
-                    title=f"US {stk_crop} Total Supply (Sep Stocks + Production)",
+                    title=f"US {stk_crop} Total Supply (Sep 1 Stocks + Production)",
                     y_label="Billion bu", stacked=True,
                 )
             else:
@@ -3615,11 +3635,11 @@ def main():
                 title=f"{stk_crop} — {stk_view} ({_tbl_unit}) | {_period_note} "
                       f"({min(_hist_years)}–{max(_hist_years)})",
                 unit=_tbl_unit,
-                divisor=1,          # values already in display units
+                divisor=1 if _is_ratio else 1e6,   # raw bu → M bu; ratios stay as-is
                 is_ratio=_is_ratio,
                 us_totals=_stk_us_tot if not _is_ratio else None,
                 regions=None,       # no crop-specific regions for stocks
-                fmt=".1f" if _is_ratio else ",.0f",
+                fmt=".1f",          # 1 decimal = nearest 100K bu in M bu units
             )
             st.plotly_chart(_stk_htbl, use_container_width=True,
                             key="stk_heatmap_tbl",
