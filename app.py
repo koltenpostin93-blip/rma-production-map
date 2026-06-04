@@ -2238,6 +2238,7 @@ def main():
 
                     with st.spinner("Loading historical data…"):
                         _hist: dict = {}
+                        _tbl_est_years: set = set()   # years where production is estimated
                         for _hyr in _HIST_YEARS:
                             _hist[_hyr] = {}
                             for _hst in _HIST_STATTYPES:
@@ -2256,6 +2257,27 @@ def main():
                                             float(_hdf_s["Value"].iloc[0])
                                             if not _hdf_s.empty else None
                                         )
+                                    elif (_htbl_scope == "ASD District"
+                                          and _htbl_dist
+                                          and _hst == "production"):
+                                        # Use Tier-1 estimated county data for production
+                                        _comp_yr = get_completed_county_production(
+                                            nass_crop, nass_state, _hyr, _CACHE_VERSION
+                                        )
+                                        if _comp_yr.empty:
+                                            _hist[_hyr][_hst] = None
+                                            continue
+                                        _comp_dist = _comp_yr[
+                                            _comp_yr["District"] == _htbl_dist
+                                        ]
+                                        if _comp_dist.empty:
+                                            _hist[_hyr][_hst] = None
+                                        else:
+                                            _hist[_hyr][_hst] = float(
+                                                _comp_dist["Production"].sum()
+                                            )
+                                            if _comp_dist["is_estimated"].any():
+                                                _tbl_est_years.add(_hyr)
                                     else:
                                         # County-level data filtered to district or county
                                         _hdf = _load_for_metric(
@@ -2344,6 +2366,12 @@ def main():
 
                     _htbl_df = pd.DataFrame(_htbl_rows).set_index("")
 
+                    # Mark estimated year columns with " (Est)"
+                    if _tbl_est_years:
+                        _htbl_df = _htbl_df.rename(
+                            columns={str(y): f"{y} (Est)" for y in _tbl_est_years}
+                        )
+
                     def _htbl_style(val):
                         if "(+" in str(val): return f"color:{ACCENT};font-weight:600"
                         if "(-" in str(val): return "color:#ef4444;font-weight:600"
@@ -2356,6 +2384,14 @@ def main():
                         )
                     else:
                         st.dataframe(_htbl_df, use_container_width=True)
+
+                    if _tbl_est_years:
+                        st.caption(
+                            "Est = Some counties not yet final. Production is estimated "
+                            "using each county's historical share of state output, "
+                            "adjusted for current district performance, and scaled to "
+                            "reconcile with the NASS state total."
+                        )
 
                     st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                                 unsafe_allow_html=True)
