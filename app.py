@@ -2904,8 +2904,8 @@ def main():
             if st.button("🔄 Refresh", use_container_width=True, key="stk_refresh"):
                 st.cache_data.clear(); st.rerun()
 
-        # ── Row 2: comparison view ─────────────────────────────────────────────
-        cv1, cv2, cv3 = st.columns([3.2, 1.2, 1.0])
+        # ── Row 2: comparison view + optional base year ────────────────────────
+        cv1, cv2 = st.columns([3.8, 1.0])
         with cv1:
             stk_change = st.radio(
                 "Compare",
@@ -2913,21 +2913,20 @@ def main():
                 horizontal=True, key="stk_change", label_visibility="collapsed",
             )
         with cv2:
-            if stk_change != "Current Year":
-                stk_change_type = st.radio(
-                    "Change Type", ["% Change", "Nominal"],
-                    horizontal=True, key="stk_change_type",
-                    label_visibility="collapsed",
-                )
-            else:
-                stk_change_type = None
-        with cv3:
             if stk_change == "vs Selected Year":
                 _avail_comp = [y for y in NASS_YEARS if y < stk_year]
                 stk_comp_yr = st.selectbox("Base Year", _avail_comp,
                                            key="stk_comp_yr")
             else:
                 stk_comp_yr = None
+
+        # Nominal/% toggle lives BELOW the map — read from session state here
+        # so the computation uses the correct value on every re-run.
+        # Default: Nominal (bu change) for all comparison views.
+        stk_change_type = (
+            st.session_state.get("stk_nominal_pct", "Nominal")
+            if stk_change != "Current Year" else None
+        )
 
         # ── Load data ─────────────────────────────────────────────────────────
         with st.spinner(f"Loading {stk_year} {stk_crop} data…"):
@@ -3135,6 +3134,18 @@ def main():
             st.plotly_chart(stk_fig, use_container_width=True, key="stk_map",
                             config={"scrollZoom": False, "displayModeBar": False,
                                     "doubleClick": False})
+
+            # ── Nominal / % toggle (only shown for comparison views) ──────────
+            if stk_change != "Current Year":
+                st.radio(
+                    "Map values",
+                    ["Nominal", "% Change"],
+                    horizontal=True,
+                    key="stk_nominal_pct",
+                    index=0,   # default to Nominal
+                    label_visibility="collapsed",
+                    help="Nominal = absolute change in bushels  |  % Change = relative change",
+                )
 
             st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
                         unsafe_allow_html=True)
