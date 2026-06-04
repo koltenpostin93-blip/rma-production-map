@@ -3055,34 +3055,52 @@ def main():
                             _nd_yr:   dict = {}   # {district: {year: value}}
                             _nd_us:   dict = {}   # {year: state total}
                             _nd_ctys: dict = {}   # {district: {county: {year: value}}}
+                            _nd_est:  dict = {}   # {district: {county: {year: bool}}}
                             for _ny in _HIST_YEARS:
                                 _cddf = get_completed_county_data(
                                     nass_crop, nass_state, _ny, _nt_stat, _CACHE_VERSION
                                 )
                                 if not _cddf.empty and "District" in _cddf.columns:
                                     for dist, grp in _cddf.groupby("District"):
-                                        if dist not in _nd_yr:  _nd_yr[dist]   = {}
-                                        if dist not in _nd_ctys: _nd_ctys[dist] = {}
+                                        if dist not in _nd_yr:   _nd_yr[dist]   = {}
+                                        if dist not in _nd_ctys:  _nd_ctys[dist] = {}
+                                        if dist not in _nd_est:   _nd_est[dist]  = {}
                                         _nd_yr[dist][_ny] = float(
                                             grp["Value"].mean() if _nt_ratio else grp["Value"].sum()
                                         )
-                                        # Capture county-level rows for expanders
                                         for _, _crow in grp.iterrows():
                                             _cn = _crow.get("County", "")
                                             if _cn:
                                                 if _cn not in _nd_ctys[dist]: _nd_ctys[dist][_cn] = {}
+                                                if _cn not in _nd_est[dist]:  _nd_est[dist][_cn]  = {}
                                                 _cv = _crow.get("Value")
                                                 _nd_ctys[dist][_cn][_ny] = float(_cv) if pd.notna(_cv) and _cv else None
+                                                _nd_est[dist][_cn][_ny]  = bool(_crow.get("is_estimated", False))
                                     _nd_us[_ny] = float(
                                         _cddf["Value"].mean() if _nt_ratio else _cddf["Value"].sum()
                                     )
+                        # Apply (Est)/(USDA) labels based on latest-year status
+                        _latest_yr = max(_HIST_YEARS)
+                        def _dist_any_est(dist):
+                            return any(
+                                _nd_est.get(dist, {}).get(c, {}).get(_latest_yr, False)
+                                for c in _nd_ctys.get(dist, {})
+                            )
+                        # District table: rename keys to include status label
+                        _nd_yr_labeled = {
+                            f"{d} (Est)" if _dist_any_est(d) else f"{d} (USDA)": v
+                            for d, v in _nd_yr.items()
+                        }
+                        _nd_us_labeled = {  # keep us_totals keyed by year
+                            y: v for y, v in _nd_us.items()
+                        }
                         _nt_tbl_title = (f"{nass_state} {nass_crop} — {nass_metric} "
                                          f"by ASD District ({_nt_unit}) | "
                                          f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}")
                         _nt_fig = build_heatmap_table(
-                            _nd_yr, _HIST_YEARS, title=_nt_tbl_title,
+                            _nd_yr_labeled, _HIST_YEARS, title=_nt_tbl_title,
                             unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
-                            us_totals=_nd_us if not _nt_ratio else None,
+                            us_totals=_nd_us_labeled if not _nt_ratio else None,
                             regions=None, fmt=_nt_fmt,
                         )
 
@@ -3151,15 +3169,27 @@ def main():
                                 expanded=False,
                             ):
                                 if _cty_data:
+                                    # Label each county (Est) or (USDA) by latest year
+                                    _cty_est_map = _nd_est.get(_dist_name, {})
+                                    _cty_labeled = {
+                                        (f"{cn} (Est)" if _cty_est_map.get(cn, {}).get(_latest_yr, False)
+                                         else f"{cn} (USDA)"): yvals
+                                        for cn, yvals in _cty_data.items()
+                                    }
+                                    _dist_est = _dist_any_est(_dist_name)
+                                    _dist_top_lbl = (
+                                        f"{_dist_name} District Total "
+                                        f"{'(Est)' if _dist_est else '(USDA)'}"
+                                    )
                                     _cty_fig = build_heatmap_table(
-                                        _cty_data, _HIST_YEARS,
+                                        _cty_labeled, _HIST_YEARS,
                                         title=(f"{_dist_name} — County Detail "
                                                f"({_nt_unit})"),
                                         unit=_nt_unit, divisor=_nt_div,
                                         is_ratio=_nt_ratio, regions=None,
                                         fmt=_nt_fmt,
                                         top_row=_nd_yr.get(_dist_name, {}),
-                                        top_row_label=f"{_dist_name} District Total",
+                                        top_row_label=_dist_top_lbl,
                                     )
                                     st.plotly_chart(
                                         _cty_fig, use_container_width=True,
