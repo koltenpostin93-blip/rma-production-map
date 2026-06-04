@@ -3153,10 +3153,14 @@ def main():
             # ── Historical table ──────────────────────────────────────────────
             _hist_n_yrs = 6
             _hist_years = sorted([y for y in NASS_YEARS if y <= stk_year][:_hist_n_yrs])
+
+            # Unit label for the table title
+            _tbl_unit = "%" if _is_ratio else "M bu"
+
             st.markdown(
                 f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
                 f"margin:0 0 6px 0;letter-spacing:0.04em;'>"
-                f"📅 HISTORICAL — {stk_crop} {stk_view} | {_period_note} "
+                f"📅 HISTORICAL — {stk_crop} {stk_view} ({_tbl_unit}) | {_period_note} "
                 f"({min(_hist_years)}–{max(_hist_years)})</p>",
                 unsafe_allow_html=True,
             )
@@ -3164,7 +3168,6 @@ def main():
             with st.spinner("Loading historical data…"):
                 _yr_dfs = {_hy: _load_yr(_hy) for _hy in _hist_years}
 
-            # State × year absolute pivot
             _all_states = sorted(
                 set().union(*[set(df["State"].tolist())
                                for df in _yr_dfs.values() if not df.empty])
@@ -3176,33 +3179,18 @@ def main():
                 v = r[col].values[0]
                 return float(v) if pd.notna(v) and v else None
 
-            def _fmt_abs(v):
+            # Format: plain number, no unit suffix (unit is in title)
+            def _cell(v):
                 if v is None: return "—"
-                return f"{v:.1f}%" if _is_ratio else _bu_fmt(v)
+                return f"{v:.1f}" if _is_ratio else f"{v/1e6:,.1f}"
 
+            # State × year pivot — numbers only, no Δ columns
             _htbl_data = {"State Name": [ABBR_TO_NAME.get(s, s) for s in _all_states]}
             for _hy in _hist_years:
                 _df_h = _yr_dfs.get(_hy, pd.DataFrame())
                 _htbl_data[str(_hy)] = [
-                    _fmt_abs(_abs_val(_df_h, _col, s)) for s in _all_states
+                    _cell(_abs_val(_df_h, _col, s)) for s in _all_states
                 ]
-                # Add % change vs prior year column
-                if _hy > min(_hist_years):
-                    _prev_df = _yr_dfs.get(_hy - 1, pd.DataFrame())
-                    _chg_col = []
-                    for s in _all_states:
-                        cur  = _abs_val(_df_h, _col, s)
-                        base = _abs_val(_prev_df, _col, s)
-                        if cur and base and base != 0:
-                            pct = (cur - base) / abs(base) * 100
-                            nom = cur - base
-                            _chg_col.append(
-                                f"{'+'if pct>=0 else ''}{pct:.1f}% / "
-                                + (_delta_fmt(nom, _is_ratio))
-                            )
-                        else:
-                            _chg_col.append("—")
-                    _htbl_data[f"Δ {_hy-1}→{_hy}"] = _chg_col
 
             _htbl_df = pd.DataFrame(_htbl_data)
             _htbl_df.insert(0, "State", _all_states)
@@ -3211,33 +3199,18 @@ def main():
             st.dataframe(_htbl_df, use_container_width=True)
 
             # US national summary row
-            _nat_rows = []
-            for label, agg_fn in [("🇺🇸 US Value", lambda df: (
-                    df[_col].mean() if _is_ratio else df[_col].sum()
-                    ) if not df.empty and _col in df.columns else None)]:
-                _nr = {"": label}
-                _prev_v = None
-                for _hy in _hist_years:
-                    _df_h = _yr_dfs.get(_hy, pd.DataFrame())
-                    _v = agg_fn(_df_h)
-                    _nr[str(_hy)] = _fmt_abs(_v)
-                    if _v and _prev_v:
-                        pct = (_v - _prev_v) / abs(_prev_v) * 100
-                        nom = _v - _prev_v
-                        _nr[f"Δ {_hy-1}→{_hy}"] = (
-                            f"{'+'if pct>=0 else ''}{pct:.1f}% / "
-                            + _delta_fmt(nom, _is_ratio)
-                        )
-                    elif _hy > min(_hist_years):
-                        _nr[f"Δ {_hy-1}→{_hy}"] = "—"
-                    _prev_v = _v
-                _nat_rows.append(_nr)
+            _nat_agg = lambda df: (
+                df[_col].mean() if _is_ratio else df[_col].sum()
+            ) if not df.empty and _col in df.columns else None
+            _nr = {"": f"🇺🇸 US Total ({_tbl_unit})"}
+            for _hy in _hist_years:
+                _v = _nat_agg(_yr_dfs.get(_hy, pd.DataFrame()))
+                _nr[str(_hy)] = _cell(_v)
             st.dataframe(
-                pd.DataFrame(_nat_rows).set_index(""),
+                pd.DataFrame([_nr]).set_index(""),
                 use_container_width=True,
             )
             st.caption(
-                "Δ columns show % change and nominal change (bu or pp) vs prior year. "
                 "Total Supply = Sep 1 beginning stocks + crop year production. "
                 "Source: USDA NASS Grain Stocks Survey and Crop Production (state level only)."
             )
