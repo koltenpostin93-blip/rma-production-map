@@ -2267,8 +2267,12 @@ def main():
                                 st.info(f"ASD district map not available for "
                                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
                             else:
+                                nass_dist_fig.update_layout(dragmode=False)
                                 st.plotly_chart(nass_dist_fig, use_container_width=True,
-                                                key="nass_district_map")
+                                                key="nass_district_map",
+                                                config={"scrollZoom": False,
+                                                        "displayModeBar": False,
+                                                        "doubleClick": False})
                     else:
                         _cty_est_stat = _METRIC_TO_STAT.get(nass_metric, "")
                         _use_est_county = (
@@ -2303,8 +2307,12 @@ def main():
                                 f"{ABBR_TO_NAME.get(nass_state, nass_state)}."
                             )
                         else:
+                            nass_county_fig.update_layout(dragmode=False)
                             st.plotly_chart(nass_county_fig, use_container_width=True,
-                                            key="nass_county_map")
+                                            key="nass_county_map",
+                                            config={"scrollZoom": False,
+                                                    "displayModeBar": False,
+                                                    "doubleClick": False})
                             if _cty_n_est > 0:
                                 st.caption(
                                     f"Est = {_cty_n_est} counties not yet final. "
@@ -2675,7 +2683,8 @@ def main():
             fig = build_state_fig(agg, metric, crop_label, practice, logo_50yr)
             fig.update_layout(dragmode=False)
             st.plotly_chart(fig, use_container_width=True, key="rma_state_map",
-                            config={"scrollZoom": False, "displayModeBar": False})
+                            config={"scrollZoom": False, "displayModeBar": False,
+                                    "doubleClick": False})
             st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
         else:
@@ -2697,7 +2706,10 @@ def main():
                 if fig is None:
                     st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
                 else:
-                    st.plotly_chart(fig, use_container_width=True, key="rma_county_map")
+                    fig.update_layout(dragmode=False)
+                    st.plotly_chart(fig, use_container_width=True, key="rma_county_map",
+                                    config={"scrollZoom": False, "displayModeBar": False,
+                                            "doubleClick": False})
                     st.caption("Use ← Back to US Map to return to the national overview.")
 
             state_name = ABBR_TO_NAME.get(state, state)
