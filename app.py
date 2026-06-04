@@ -1784,11 +1784,13 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
 
 
 NASS_REGIONAL_GROUPS = {
-    "Eastern Corn Belt": ["IL", "IN", "OH", "MI", "KY"],
-    "Upper Plains":      ["IA", "NE", "KS"],
-    "N. Border States":  ["MN", "SD", "ND"],
-    "Delta":             ["MS", "AR", "LA", "TN"],
-    "Other":             ["WI", "MO", "TX", "CO", "MT", "WY", "OK", "VA", "PA"],
+    "Eastern Corn Belt":       ["IL", "IN", "OH", "MI", "KY"],
+    "Central Plains (UP States)": ["IA", "NE", "KS"],
+    "Upper Plains (BN States)":   ["MN", "SD", "ND"],
+    "Delta":                   ["MS", "AR", "LA", "TN"],
+    "SE States":               ["AL", "GA", "FL", "SC", "NC", "VA", "WV"],
+    "NE States":               ["PA", "NY", "MD", "VT", "NH", "MA", "NJ", "DE", "ME"],
+    "Other":                   ["WI", "MO", "TX", "CO", "MT", "WY", "OK"],
 }
 
 def _row_bg_text(rank: int, n: int):
