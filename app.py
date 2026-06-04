@@ -1990,10 +1990,22 @@ def main():
                     nass_fig = build_nass_state_fig(
                         state_vdf, nass_crop, nass_year, nass_metric, nass_change, logo_50yr
                     )
-                    nass_fig.update_layout(dragmode=False)
+                    nass_fig.update_layout(
+                        dragmode=False,
+                        geo=dict(
+                            projection_type="albers usa",
+                            showframe=False,
+                            bgcolor=DARK,
+                            landcolor=LAND,
+                        ),
+                    )
                     st.plotly_chart(nass_fig, use_container_width=True,
                                     key="nass_state_map",
-                                    config={"scrollZoom": False, "displayModeBar": False})
+                                    config={
+                                        "scrollZoom":    False,
+                                        "displayModeBar": False,
+                                        "doubleClick":   False,
+                                    })
                     st.caption("Use the State Drill-Down dropdown above to view county detail.")
 
             else:
