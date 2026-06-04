@@ -2836,8 +2836,10 @@ def main():
                         unsafe_allow_html=True,
                     )
 
-                    # Rolling 6-year window ending at the selected year
-                    _HIST_YEARS = list(range(nass_year - 5, nass_year + 1))
+                    # Rolling window — user-selectable 5 or 10 years (default 5)
+                    _tbl_n_yrs  = st.radio("Table history (years)", [5, 10],
+                                           horizontal=True, key="nass_tbl_yrs", index=0)
+                    _HIST_YEARS = list(range(nass_year - (_tbl_n_yrs - 1), nass_year + 1))
                     _HIST_STATTYPES = ["planted", "harvested", "pct_harvested",
                                        "yield", "production"]
                     _HIST_ROW_LBL   = {
