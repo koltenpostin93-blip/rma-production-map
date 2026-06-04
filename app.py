@@ -1816,6 +1816,8 @@ def build_heatmap_table(
     us_totals: dict = None,  # {year: raw_us_total} for % of US column
     regions: dict = None,    # use NASS_REGIONAL_GROUPS if None
     fmt: str = ",.0f",
+    top_row: dict = None,        # {year: raw_value} — summary row pinned at top
+    top_row_label: str = "",     # label for the top summary row
 ) -> go.Figure:
     """
     Styled Plotly table with:
@@ -1867,6 +1869,15 @@ def build_heatmap_table(
 
     row_labels, row_data, row_bg, row_fg, row_is_region = [], [], [], [], []
     seen = set()
+
+    # ── Optional pinned summary row at top (e.g. district total) ─────────────
+    if top_row and top_row_label:
+        _tr_vals = [_disp(top_row.get(y)) for y in years]
+        row_labels.append(f"▶  {top_row_label}")
+        row_data.append(_tr_vals)
+        row_bg.append(["#1a2f24"] * len(years))   # distinct dark teal
+        row_fg.append([_G] * len(years))           # gold text — stands out
+        row_is_region.append(True)
 
     for region_name, members in regions.items():
         region_members = [s for s in members if s in have_states]
@@ -3147,6 +3158,8 @@ def main():
                                         unit=_nt_unit, divisor=_nt_div,
                                         is_ratio=_nt_ratio, regions=None,
                                         fmt=_nt_fmt,
+                                        top_row=_nd_yr.get(_dist_name, {}),
+                                        top_row_label=f"{_dist_name} District Total",
                                     )
                                     st.plotly_chart(
                                         _cty_fig, use_container_width=True,
