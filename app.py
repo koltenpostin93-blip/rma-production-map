@@ -2747,63 +2747,12 @@ def main():
                     st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                                 unsafe_allow_html=True)
 
-                    # ── Historical Bar Chart ──────────────────────────────────
-                    _nc_n = st.radio("Chart history (years)", [5, 10],
-                                     horizontal=True, key="nass_chart_yrs", index=1)
-                    _nc_yrs = sorted([y for y in NASS_YEARS if y <= nass_year][:_nc_n])
-                    _nc_stat = _METRIC_TO_STAT.get(nass_metric, "production")
-
-                    with st.spinner("Building chart…"):
-                        _nc_vals = []
-                        for _ny in _nc_yrs:
-                            _ndf = _load_state_for_stat(nass_crop, _ny, _nc_stat, _CACHE_VERSION)
-                            if not _ndf.empty and "State" in _ndf.columns:
-                                _ndf_s = _ndf[_ndf["State"] == nass_state]
-                                if not _ndf_s.empty:
-                                    _nc_vals.append(float(
-                                        _ndf_s["Value"].mean()
-                                        if nass_metric in ("Yield (bu/ac)","% Harvested")
-                                        else _ndf_s["Value"].sum()
-                                    ))
-                                else:
-                                    _nc_vals.append(None)
-                            else:
-                                _nc_vals.append(None)
-
-                    _nc_unit = {
-                        "Production (bu)":    1e9, "Planted Acres": 1e6,
-                        "Harvested Acres":    1e6, "% Harvested":   1,
-                        "Yield (bu/ac)":      1,   "Prevent Plant Acres": 1e6,
-                        "pct_harvested":      1,
-                    }.get(nass_metric, 1e9)
-                    _nc_y_lbl = {
-                        "Production (bu)": "Billion bu", "Planted Acres": "Million ac",
-                        "Harvested Acres": "Million ac", "% Harvested": "%",
-                        "Yield (bu/ac)": "bu/ac",        "Prevent Plant Acres": "Million ac",
-                    }.get(nass_metric, "")
-
-                    _nc_fig = build_history_bar(
-                        {nass_metric: [v / _nc_unit if v else 0 for v in _nc_vals]},
-                        _nc_yrs,
-                        title=f"{ABBR_TO_NAME.get(nass_state, nass_state)} "
-                              f"{nass_crop} — {nass_metric}",
-                        y_label=_nc_y_lbl,
-                    )
-                    st.plotly_chart(_nc_fig, use_container_width=True,
-                                    key="nass_hist_chart",
-                                    config={"displayModeBar": False})
-
-                    st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
-                                unsafe_allow_html=True)
-
-                    # ── National Heatmap Table (all states × years) ───────────
+                    # ── Scope selector — controls BOTH chart and table ─────────
                     _state_full = ABBR_TO_NAME.get(nass_state, nass_state)
-
-                    # Scope selector: State (default), ASD District, or County
                     _hsc1, _hsc2 = st.columns([1.4, 2.6])
                     with _hsc1:
                         _htbl_scope = st.radio(
-                            "Table Scope",
+                            "View",
                             ["State", "ASD District", "County"],
                             horizontal=True, key="htbl_scope",
                         )
@@ -2829,6 +2778,63 @@ def main():
                         else:
                             _htbl_dist = _htbl_county = None
                             _scope_label = _state_full
+
+                    # ── Historical Bar Chart (scope-aware) ────────────────────
+                    _nc_n = st.radio("Chart history (years)", [5, 10],
+                                     horizontal=True, key="nass_chart_yrs", index=1)
+                    _nc_yrs  = sorted([y for y in NASS_YEARS if y <= nass_year][:_nc_n])
+                    _nc_stat = _METRIC_TO_STAT.get(nass_metric, "production")
+                    _nc_ratio= nass_metric in ("Yield (bu/ac)", "% Harvested")
+
+                    with st.spinner("Building chart…"):
+                        _nc_vals = []
+                        for _ny in _nc_yrs:
+                            _v = None
+                            if _htbl_scope == "State":
+                                _ndf = _load_state_for_stat(nass_crop, _ny, _nc_stat, _CACHE_VERSION)
+                                if not _ndf.empty and "State" in _ndf.columns:
+                                    _s = _ndf[_ndf["State"] == nass_state]
+                                    if not _s.empty:
+                                        _v = float(_s["Value"].mean() if _nc_ratio else _s["Value"].sum())
+                            elif _htbl_scope == "ASD District" and _htbl_dist:
+                                _cdf = get_completed_county_data(nass_crop, nass_state, _ny, _nc_stat, _CACHE_VERSION)
+                                if not _cdf.empty and "District" in _cdf.columns:
+                                    _d = _cdf[_cdf["District"] == _htbl_dist]
+                                    if not _d.empty:
+                                        _v = float(_d["Value"].mean() if _nc_ratio else _d["Value"].sum())
+                            elif _htbl_scope == "County" and _htbl_county:
+                                _cdf = _load_for_metric(nass_crop, _ny, _nc_stat)
+                                if not _cdf.empty and "State" in _cdf.columns:
+                                    _c = _cdf[(_cdf["State"] == nass_state) & (_cdf["County"] == _htbl_county)]
+                                    if not _c.empty:
+                                        _v = float(_c["Value"].mean() if _nc_ratio else _c["Value"].sum())
+                            _nc_vals.append(_v)
+
+                    _nc_unit = {
+                        "Production (bu)": 1e9, "Planted Acres": 1e6,
+                        "Harvested Acres": 1e6, "% Harvested":   1,
+                        "Yield (bu/ac)":   1,   "Prevent Plant Acres": 1e6,
+                    }.get(nass_metric, 1e9)
+                    _nc_y_lbl = {
+                        "Production (bu)": "Billion bu", "Planted Acres": "Million ac",
+                        "Harvested Acres": "Million ac", "% Harvested": "%",
+                        "Yield (bu/ac)": "bu/ac",        "Prevent Plant Acres": "Million ac",
+                    }.get(nass_metric, "")
+
+                    _nc_fig = build_history_bar(
+                        {nass_metric: [v / _nc_unit if v else 0 for v in _nc_vals]},
+                        _nc_yrs,
+                        title=f"{_scope_label} — {nass_crop} {nass_metric}",
+                        y_label=_nc_y_lbl,
+                    )
+                    st.plotly_chart(_nc_fig, use_container_width=True,
+                                    key="nass_hist_chart",
+                                    config={"displayModeBar": False})
+
+                    st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
+                                unsafe_allow_html=True)
+
+                    # ── National / District / County Heatmap Table ────────────
 
                     st.markdown(
                         f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
