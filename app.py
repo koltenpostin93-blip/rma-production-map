@@ -2747,7 +2747,7 @@ def main():
 
                     # ── Historical Bar Chart ──────────────────────────────────
                     _nc_n = st.radio("Chart history (years)", [5, 10],
-                                     horizontal=True, key="nass_chart_yrs", index=0)
+                                     horizontal=True, key="nass_chart_yrs", index=1)
                     _nc_yrs = sorted([y for y in NASS_YEARS if y <= nass_year][:_nc_n])
                     _nc_stat = _METRIC_TO_STAT.get(nass_metric, "production")
 
@@ -2991,50 +2991,98 @@ def main():
                     _nt_stat  = _METRIC_TO_STAT.get(nass_metric, "production")
                     _nt_ratio = nass_metric in ("Yield (bu/ac)", "% Harvested")
                     _nt_units = {
-                        "Production (bu)":"B bu","Planted Acres":"M ac",
+                        "Production (bu)":"100K bu","Planted Acres":"M ac",
                         "Harvested Acres":"M ac","% Harvested":"%",
                         "Yield (bu/ac)":"bu/ac","Prevent Plant Acres":"M ac",
                     }
                     _nt_divs  = {
-                        "Production (bu)":1e9,"Planted Acres":1e6,
-                        "Harvested Acres":1e6,"% Harvested":1,
+                        "Production (bu)":1e5,   # 100K bu units
+                        "Planted Acres":1e6,"Harvested Acres":1e6,"% Harvested":1,
                         "Yield (bu/ac)":1,"Prevent Plant Acres":1e6,
                     }
-                    _nt_unit  = _nt_units.get(nass_metric, "M bu")
-                    _nt_div   = _nt_divs.get(nass_metric, 1e6)
-                    _nt_fmt   = ".1f"   # 1 decimal = nearest 100K bu in display units
+                    _nt_unit  = _nt_units.get(nass_metric, "100K bu")
+                    _nt_div   = _nt_divs.get(nass_metric, 1e5)
+                    _nt_fmt   = ",.0f" if nass_metric == "Production (bu)" else ".1f"
 
-                    with st.spinner("Building national table…"):
-                        _nt_state_yr: dict = {}
-                        _nt_us_tot:   dict = {}
-                        for _ny in _HIST_YEARS:
-                            _ntdf = _load_state_for_stat(nass_crop, _ny, _nt_stat, _CACHE_VERSION)
-                            if not _ntdf.empty and "State" in _ntdf.columns:
-                                for _, _nr in _ntdf.iterrows():
-                                    _ns = _nr["State"]
-                                    if _ns not in _nt_state_yr:
-                                        _nt_state_yr[_ns] = {}
-                                    _nv = _nr.get("Value")
-                                    _nt_state_yr[_ns][_ny] = float(_nv) if pd.notna(_nv) and _nv else None
-                                _nt_us_tot[_ny] = float(
-                                    _ntdf["Value"].mean() if _nt_ratio else _ntdf["Value"].sum()
+                    if _htbl_scope == "State":
+                        # National all-states heatmap
+                        with st.spinner("Building national table…"):
+                            _nt_state_yr: dict = {}
+                            _nt_us_tot:   dict = {}
+                            for _ny in _HIST_YEARS:
+                                _ntdf = _load_state_for_stat(nass_crop, _ny, _nt_stat, _CACHE_VERSION)
+                                if not _ntdf.empty and "State" in _ntdf.columns:
+                                    for _, _nr in _ntdf.iterrows():
+                                        _ns = _nr["State"]
+                                        if _ns not in _nt_state_yr: _nt_state_yr[_ns] = {}
+                                        _nv = _nr.get("Value")
+                                        _nt_state_yr[_ns][_ny] = float(_nv) if pd.notna(_nv) and _nv else None
+                                    _nt_us_tot[_ny] = float(
+                                        _ntdf["Value"].mean() if _nt_ratio else _ntdf["Value"].sum()
+                                    )
+                        _nt_tbl_title = (f"{nass_crop} — {nass_metric} ({_nt_unit}) | "
+                                         f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}")
+                        _nt_fig = build_heatmap_table(
+                            _nt_state_yr, _HIST_YEARS, title=_nt_tbl_title,
+                            unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
+                            us_totals=_nt_us_tot if not _nt_ratio else None, fmt=_nt_fmt,
+                        )
+
+                    elif _htbl_scope == "ASD District" and _htbl_dist:
+                        # District × year heatmap for the selected state
+                        with st.spinner("Building district table…"):
+                            _nd_yr: dict = {}
+                            _nd_us:  dict = {}
+                            for _ny in _HIST_YEARS:
+                                _cddf = get_completed_county_data(
+                                    nass_crop, nass_state, _ny, _nt_stat, _CACHE_VERSION
                                 )
+                                if not _cddf.empty and "District" in _cddf.columns:
+                                    _agg_fn = (lambda g: g["Value"].mean()
+                                               if _nt_ratio else g["Value"].sum())
+                                    for dist, grp in _cddf.groupby("District"):
+                                        if dist not in _nd_yr: _nd_yr[dist] = {}
+                                        _nd_yr[dist][_ny] = float(_agg_fn(grp))
+                                    _nd_us[_ny] = float(
+                                        _cddf["Value"].mean() if _nt_ratio else _cddf["Value"].sum()
+                                    )
+                        _nt_tbl_title = (f"{nass_state} {nass_crop} — {nass_metric} "
+                                         f"by ASD District ({_nt_unit}) | "
+                                         f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}")
+                        _nt_fig = build_heatmap_table(
+                            _nd_yr, _HIST_YEARS, title=_nt_tbl_title,
+                            unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
+                            us_totals=_nd_us if not _nt_ratio else None,
+                            regions=None, fmt=_nt_fmt,
+                        )
 
-                    _nt_fig = build_heatmap_table(
-                        _nt_state_yr, _HIST_YEARS,
-                        title=f"{nass_crop} — {nass_metric} ({_nt_unit}) | "
-                              f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}",
-                        unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
-                        us_totals=_nt_us_tot if not _nt_ratio else None,
-                        fmt=_nt_fmt,
-                    )
+                    else:
+                        # County scope — show all counties for selected state
+                        with st.spinner("Building county table…"):
+                            _nco_yr: dict = {}
+                            for _ny in _HIST_YEARS:
+                                _cdf = _load_for_metric(nass_crop, _ny, _nt_stat)
+                                if not _cdf.empty and "State" in _cdf.columns:
+                                    _cdf_s = _cdf[_cdf["State"] == nass_state]
+                                    for _, _cr in _cdf_s.iterrows():
+                                        _cn = _cr.get("County", "")
+                                        if _cn:
+                                            if _cn not in _nco_yr: _nco_yr[_cn] = {}
+                                            _nco_yr[_cn][_ny] = float(_cr["Value"]) if pd.notna(_cr["Value"]) else None
+                        _nt_tbl_title = (f"{nass_state} {nass_crop} — {nass_metric} "
+                                         f"by County ({_nt_unit}) | "
+                                         f"{min(_HIST_YEARS)}–{max(_HIST_YEARS)}")
+                        _nt_fig = build_heatmap_table(
+                            _nco_yr, _HIST_YEARS, title=_nt_tbl_title,
+                            unit=_nt_unit, divisor=_nt_div, is_ratio=_nt_ratio,
+                            regions=None, fmt=_nt_fmt,
+                        )
+
                     st.plotly_chart(_nt_fig, use_container_width=True,
                                     key="nass_heatmap_tbl",
                                     config={"displayModeBar": False})
                     st.caption(
-                        f"Top 2 = green  ·  Bottom 2 = red  ·  "
-                        f"{'(Est)' if _tbl_est_years else ''}"
-                        " Highlighted state is current drill-down selection. "
+                        "Top 2 = green  ·  Bottom 2 = red per row  ·  "
                         "Olympic Avg drops single highest and lowest year."
                     )
 
@@ -3542,7 +3590,7 @@ def main():
 
             # ── Historical bar chart ──────────────────────────────────────────
             _chart_n = st.radio("Chart history (years)", [5, 10],
-                                horizontal=True, key="stk_chart_yrs", index=0)
+                                horizontal=True, key="stk_chart_yrs", index=1)
             _chart_yrs = sorted([y for y in NASS_YEARS if y <= stk_year][:_chart_n])
 
             with st.spinner("Building chart…"):
