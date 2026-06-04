@@ -693,8 +693,7 @@ def load_grain_stocks(crop: str, year: int, reference_period: str,
         url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
         with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
-    except Exception as e:
-        st.warning(f"NASS stocks API error: {e}")
+    except Exception:
         return pd.DataFrame()
 
     records = raw.get("data", [])
