@@ -997,7 +997,10 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
     _layout = _base_layout(
         f"NASS {year} {crop} — {view_label} | {state_name} AG Districts"
     )
-    _layout.update(height=620, geo=dict(showlakes=False))
+    _layout.update(
+        height=_state_map_height(STATE_FIPS_ALL.get(state, ""), geo) if geo else 620,
+        geo=dict(showlakes=False),
+    )
     fig.update_layout(**_layout)
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
     return fig
@@ -1528,7 +1531,8 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, pr
     )
     fig.update_geos(fitbounds="locations", visible=False,
                     bgcolor=DARK, landcolor=LAND)
-    fig.update_layout(**_base_layout(title_text), height=620)
+    fig.update_layout(**_base_layout(title_text),
+                      height=_state_map_height(sfips, geo))
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
     _place_labels(fig, df["fips"].tolist(), df[col].tolist(), centroids, metric)
     return fig
@@ -1626,6 +1630,47 @@ def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
     return fig
 
 
+def _state_map_height(sfips: str, geo: dict,
+                       min_h: int = 420, max_h: int = 820) -> int:
+    """
+    Compute a figure height that fits the state's geographic shape.
+    Reads the lat/lon bounding box from the county GeoJSON, corrects
+    longitude for latitude, and scales a nominal 900-px-wide container.
+    Tall/narrow states (IL, VA) get more height; wide/compact states (IA,
+    MN) get less so the state fills the figure rather than being dwarfed.
+    """
+    import math
+    feats = [f for f in geo["features"] if f["properties"]["STATE"] == sfips]
+    if not feats:
+        return 620
+    lats, lons = [], []
+
+    def _coords(obj):
+        if isinstance(obj, list):
+            if obj and isinstance(obj[0], (int, float)):
+                lons.append(obj[0]); lats.append(obj[1])
+            else:
+                for item in obj:
+                    _coords(item)
+
+    for f in feats:
+        _coords(f.get("geometry", {}).get("coordinates", []))
+
+    if not lats or not lons:
+        return 620
+
+    lat_r = max(lats) - min(lats)
+    lon_r = max(lons) - min(lons)
+    mean_lat = (max(lats) + min(lats)) / 2
+    adj_lon = lon_r * math.cos(math.radians(mean_lat))
+    if adj_lon == 0:
+        return 620
+
+    aspect = lat_r / adj_lon          # > 1 = tall/narrow; < 1 = wide/flat
+    height = int(900 * aspect * 1.05) # 5 % padding
+    return max(min_h, min(max_h, height))
+
+
 def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_view, logo_50yr, centroids, fips_lk):
     """county_vdf has columns [State, County, Value] — pre-computed by get_nass_view_data."""
     cfg        = _nass_view_cfg(metric, change_view)
@@ -1687,7 +1732,8 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_vie
         hovertemplate=f"%{{text}}: %{{z{cfg['hover_fmt']}}}{cfg['hover_sfx']}<extra></extra>",
     ))
     fig.update_geos(fitbounds="locations", visible=False, bgcolor=DARK, landcolor=LAND)
-    fig.update_layout(**_base_layout(title_text), height=620)
+    fig.update_layout(**_base_layout(title_text),
+                      height=_state_map_height(sfips, geo))
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
     _place_labels(fig, state_df["fips"].tolist(), state_df["Value"].tolist(),
                   centroids, cfg["label_fn"])
@@ -1776,7 +1822,8 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
         f"<br><sup>Map labels in {cfg['label_unit']}  ·  Est = county value estimated</sup>"
     )
     fig.update_geos(fitbounds="locations", visible=False, bgcolor=DARK, landcolor=LAND)
-    fig.update_layout(**_base_layout(title_text), height=620)
+    fig.update_layout(**_base_layout(title_text),
+                      height=_state_map_height(sfips, geo))
     _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
 
     # Production labels for reported counties only (same as existing county fig)
