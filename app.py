@@ -270,7 +270,7 @@ def load_nass_stat(crop: str, year: int, stat_type: str,
         with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
     except Exception as e:
-        st.warning(f"NASS API error for {crop} {year} {stat_type}: {e}")
+        return pd.DataFrame(columns=["State", "County", "fips", "Value"])
         return pd.DataFrame(columns=["State", "County", "fips", "Value"])
 
     records = raw.get("data", [])
@@ -343,7 +343,7 @@ def load_nass_state(crop: str, year: int, stat_type: str,
         with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
     except Exception as e:
-        st.warning(f"NASS state API error for {crop} {year} {stat_type}: {e}")
+        return pd.DataFrame(columns=["State", "Value"])
         return pd.DataFrame(columns=["State", "Value"])
 
     records = raw.get("data", [])
@@ -413,7 +413,7 @@ def load_nass_county(crop: str, year: int = 2025,
         with urllib.request.urlopen(url, timeout=45) as r:
             raw = json.load(r)
     except Exception as e:
-        st.warning(f"NASS API error for {crop} {year}: {e}")
+        return pd.DataFrame(columns=["State", "County", "fips", "Production"])
         return pd.DataFrame(columns=["State", "County", "fips", "Production"])
 
     records = raw.get("data", [])
