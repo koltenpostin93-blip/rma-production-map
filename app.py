@@ -2968,16 +2968,32 @@ def main():
                                         _v = float(_c["Value"].mean() if _nc_ratio else _c["Value"].sum())
                             _nc_vals.append(_v)
 
-                    _nc_unit = {
-                        "Production (bu)": 1e9, "Planted Acres": 1e6,
-                        "Harvested Acres": 1e6, "% Harvested":   1,
-                        "Yield (bu/ac)":   1,   "Prevent Plant Acres": 1e6,
-                    }.get(nass_metric, 1e9)
-                    _nc_y_lbl = {
-                        "Production (bu)": "Billion bu", "Planted Acres": "Million ac",
-                        "Harvested Acres": "Million ac", "% Harvested": "%",
-                        "Yield (bu/ac)": "bu/ac",        "Prevent Plant Acres": "Million ac",
-                    }.get(nass_metric, "")
+                    # Auto-scale unit from actual data so small states/districts
+                    # don't show as 0.3 B bu when M bu is more readable
+                    _nc_max = max((v for v in _nc_vals if v), default=0)
+
+                    def _auto_bu(mx):
+                        if mx >= 500e6:  return 1e9, "B bu"
+                        if mx >= 1e6:   return 1e6, "M bu"
+                        if mx >= 1e3:   return 1e3, "K bu"
+                        return 1, "bu"
+
+                    def _auto_ac(mx):
+                        if mx >= 500e3:  return 1e6, "M ac"
+                        if mx >= 1e3:    return 1e3, "K ac"
+                        return 1, "ac"
+
+                    if nass_metric == "Production (bu)":
+                        _nc_unit, _nc_y_lbl = _auto_bu(_nc_max)
+                    elif nass_metric in ("Planted Acres", "Harvested Acres",
+                                         "Prevent Plant Acres"):
+                        _nc_unit, _nc_y_lbl = _auto_ac(_nc_max)
+                    elif nass_metric == "Yield (bu/ac)":
+                        _nc_unit, _nc_y_lbl = 1, "bu/ac"
+                    elif nass_metric == "% Harvested":
+                        _nc_unit, _nc_y_lbl = 1, "%"
+                    else:
+                        _nc_unit, _nc_y_lbl = 1e9, "B bu"
 
                     _nc_fig = build_history_bar(
                         {nass_metric: [v / _nc_unit if v else 0 for v in _nc_vals]},
@@ -3877,42 +3893,51 @@ def main():
                 if df.empty or col not in df.columns: return 0
                 return df[col].mean() if _is_ratio else df[col].sum()
 
+            # Auto-scale helper for stocks charts
+            def _stk_raw_max(*series):
+                return max((v for s in series for v in s if v), default=0)
+
             if stk_view == "Total Stocks":
+                _on_raw  = [_us_col(_cyr_dfs[y], "OnFarm")  for y in _chart_yrs]
+                _off_raw = [_us_col(_cyr_dfs[y], "OffFarm") for y in _chart_yrs]
+                _su, _sl = _auto_bu(_stk_raw_max(_on_raw, _off_raw))
                 _chart_fig = build_history_bar(
                     {
-                        "On-Farm":  [_us_col(_cyr_dfs[y], "OnFarm")  / 1e9 for y in _chart_yrs],
-                        "Off-Farm": [_us_col(_cyr_dfs[y], "OffFarm") / 1e9 for y in _chart_yrs],
+                        "On-Farm":  [v / _su for v in _on_raw],
+                        "Off-Farm": [v / _su for v in _off_raw],
                     },
                     _chart_yrs,
                     title=f"US {stk_crop} Total Stocks — {stk_period_lbl}",
-                    y_label="Billion bu", stacked=True,
+                    y_label=_sl, stacked=True,
                 )
             elif stk_view == "Total Supply":
-                # Sep 1 stocks must always use FIRST OF SEP regardless of selected period
                 _sep_chart = {
                     y: load_grain_stocks(stk_crop, y, "FIRST OF SEP", _CACHE_VERSION)
                     for y in _chart_yrs
                 }
+                _sep_raw  = [(_sep_chart[y]["Total"].sum() if not _sep_chart[y].empty else 0) for y in _chart_yrs]
+                _prod_raw = [_us_col(_cyr_dfs[y], "Production") for y in _chart_yrs]
+                _su, _sl  = _auto_bu(_stk_raw_max(_sep_raw, _prod_raw))
                 _chart_fig = build_history_bar(
                     {
-                        "Sep 1 Stocks": [
-                            (_sep_chart[y]["Total"].sum() / 1e9 if not _sep_chart[y].empty else 0)
-                            for y in _chart_yrs
-                        ],
-                        "Production": [_us_col(_cyr_dfs[y], "Production") / 1e9 for y in _chart_yrs],
+                        "Sep 1 Stocks": [v / _su for v in _sep_raw],
+                        "Production":   [v / _su for v in _prod_raw],
                     },
                     _chart_yrs,
                     title=f"US {stk_crop} Total Supply (Sep 1 Stocks + Production)",
-                    y_label="Billion bu", stacked=True,
+                    y_label=_sl, stacked=True,
                 )
             else:
-                _y_vals = [_us_col(_cyr_dfs[y], _col) / (1 if _is_ratio else 1e9)
-                           for y in _chart_yrs]
+                _y_raw  = [_us_col(_cyr_dfs[y], _col) for y in _chart_yrs]
+                if _is_ratio:
+                    _su, _sl = 1, "%"
+                else:
+                    _su, _sl = _auto_bu(_stk_raw_max(_y_raw))
                 _chart_fig = build_history_bar(
-                    {stk_view: _y_vals},
+                    {stk_view: [v / _su for v in _y_raw]},
                     _chart_yrs,
                     title=f"US {stk_crop} {stk_view} — {stk_period_lbl}",
-                    y_label="%" if _is_ratio else "Billion bu",
+                    y_label=_sl,
                 )
             st.plotly_chart(_chart_fig, use_container_width=True, key="stk_chart",
                             config={"displayModeBar": False})
