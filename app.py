@@ -18,7 +18,7 @@ st.set_page_config(
     page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
     layout="wide",
 )
-_CACHE_VERSION = "v13"  # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v14"  # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -208,14 +208,14 @@ DISPLAY_UNIT = {
 }
 
 # ── JPSI brand palette ────────────────────────────────────────────────────────
-DARK    = "#0e1614"
-PANEL   = "#162019"
-SURFACE = "#1e2e2a"
-BORDER  = "#243328"
-TEXT    = "#e4e8f0"
-MUTED   = "#7a9990"
-ACCENT  = "#4ade80"
-LAND    = "#1a2720"
+DARK    = "#f5f7fa"
+PANEL   = "#edf1f7"
+SURFACE = "#e2e8f2"
+BORDER  = "#c8d5e3"
+TEXT    = "#1a2332"
+MUTED   = "#64748b"
+ACCENT  = "#0693e3"
+LAND    = "#dde8f0"
 
 
 # ── RMA Data ──────────────────────────────────────────────────────────────────
@@ -825,16 +825,18 @@ def get_nass_district_view_data(crop: str, year: int, metric: str,
         if use_estimation:
             df = get_completed_county_data(crop, state, yr, stat_type, _CACHE_VERSION)
             if df.empty:
-                return pd.DataFrame(columns=["fips", "Value"])
+                return pd.DataFrame(columns=["fips", "Value", "District"])
         else:
             df = _load_for_metric(crop, yr, stat_type)
             if df.empty or "State" not in df.columns:
-                return pd.DataFrame(columns=["fips", "Value"])
+                return pd.DataFrame(columns=["fips", "Value", "District"])
             df = df[df["State"] == state].copy()
         df["District"] = df["fips"].map(lambda f: fips_map.get(f, (None, None))[0])
         return df.dropna(subset=["District"])
 
     def _agg(df):
+        if "District" not in df.columns or df.empty:
+            return pd.Series(dtype=float)
         if metric in ("Yield (bu/ac)", "% Harvested"):
             return df.groupby("District")["Value"].mean()
         return df.groupby("District")["Value"].sum()
@@ -1431,7 +1433,7 @@ def _place_labels(fig, fips_list, value_series, centroids, metric_or_fn):
     if lons:
         fig.add_trace(go.Scattergeo(
             lon=lons, lat=lats, text=texts, mode="text",
-            textfont=dict(color="#aaaaaa", size=label_size, family="Arial Black"),
+            textfont=dict(color="#4b5563", size=label_size, family="Arial Black"),
             showlegend=False, hoverinfo="skip",
         ))
 
@@ -1473,7 +1475,7 @@ def build_state_fig(agg, metric, crop_label, practice, logo_50yr):
     if lons:
         fig.add_trace(go.Scattergeo(
             lon=lons, lat=lats, text=texts, mode="text", geo="geo",
-            textfont=dict(color="#cccccc", size=11, family="Arial Black"),
+            textfont=dict(color="#374151", size=11, family="Arial Black"),
             showlegend=False, hoverinfo="skip",
         ))
     _add_logo(fig, logo_50yr, size=0.30, opacity=1.0)
@@ -1503,7 +1505,7 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, pr
     if z_min == z_max:
         z_min = 0
 
-    county_line = dict(color="#3d5248", width=0.8)
+    county_line = dict(color="#a0b5c8", width=0.8)
     fig = go.Figure()
     fig.add_trace(go.Choropleth(
         geojson=state_geo, featureidkey="id",
@@ -1561,10 +1563,10 @@ def build_ranking_chart(agg, metric, state):
         hovertemplate=f"%{{y}}: %{{x:{fmt}}} {disp_unit}<extra></extra>",
     ))
     fig.add_vline(
-        x=avg_disp, line_color="#f5a623", line_width=1.5, line_dash="dash",
+        x=avg_disp, line_color="#d97706", line_width=1.5, line_dash="dash",
         annotation_text=f"  Avg: {avg_disp:{fmt}} {disp_unit}",
         annotation_position="top left",
-        annotation_font=dict(color="#f5a623", size=10),
+        annotation_font=dict(color="#d97706", size=10),
     )
     fig.update_layout(
         paper_bgcolor=DARK, plot_bgcolor=SURFACE,
@@ -1623,7 +1625,7 @@ def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
     if lons:
         fig.add_trace(go.Scattergeo(
             lon=lons, lat=lats, text=texts, mode="text", geo="geo",
-            textfont=dict(color="#cccccc", size=11, family="Arial Black"),
+            textfont=dict(color="#374151", size=11, family="Arial Black"),
             showlegend=False, hoverinfo="skip",
         ))
     _add_logo(fig, logo_50yr, size=0.30, opacity=1.0)
@@ -1711,7 +1713,7 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_vie
         f"<br><sup>Map labels in {cfg['label_unit']}</sup>"
     )
 
-    county_line = dict(color="#3d5248", width=0.8)
+    county_line = dict(color="#a0b5c8", width=0.8)
     fig = go.Figure()
     fig.add_trace(go.Choropleth(
         geojson=state_geo, featureidkey="id",
@@ -1779,7 +1781,7 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
     z_min = min(_pos) if _pos else 0
     z_max = max(_pos) if _pos else 1
 
-    county_line = dict(color="#3d5248", width=0.8)
+    county_line = dict(color="#a0b5c8", width=0.8)
     fig = go.Figure()
 
     # Background (uncoloured county outlines)
@@ -1813,7 +1815,7 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
             fig.add_trace(go.Scattergeo(
                 lon=_elons, lat=_elats, mode="text",
                 text=["Est"] * len(_elons),
-                textfont=dict(color="white", size=7, family="Arial Bold"),
+                textfont=dict(color="#374151", size=7, family="Arial Bold"),
                 showlegend=False, hoverinfo="skip",
             ))
 
@@ -1846,15 +1848,15 @@ NASS_REGIONAL_GROUPS = {
 
 def _row_bg_text(rank: int, n: int):
     """Return (bg_hex, text_hex) for a value at given rank in a row of n."""
-    if n == 0: return "#1e2e2a", "#e4e8f0"
+    if n == 0: return SURFACE, TEXT
     p = rank / max(n - 1, 1)
-    if   rank == 0:         return "#7f1d1d", "#fca5a5"
-    elif rank == 1:         return "#991b1b", "#fca5a5"
-    elif rank == n - 1:     return "#14532d", "#4ade80"
-    elif rank == n - 2:     return "#166534", "#4ade80"
-    elif p < 0.35:          return "#2d1515", "#e4e8f0"
-    elif p > 0.65:          return "#153b1e", "#e4e8f0"
-    else:                   return "#1e2e2a", "#e4e8f0"
+    if   rank == 0:         return "#fecaca", "#991b1b"
+    elif rank == 1:         return "#fee2e2", "#b91c1c"
+    elif rank == n - 1:     return "#bbf7d0", "#166534"
+    elif rank == n - 2:     return "#dcfce7", "#15803d"
+    elif p < 0.35:          return "#fef2f2", TEXT
+    elif p > 0.65:          return "#f0fdf4", TEXT
+    else:                   return SURFACE, TEXT
 
 
 def build_heatmap_table(
@@ -1879,9 +1881,9 @@ def build_heatmap_table(
       • Regional subtotal rows
       • Stats: % vs LY · Olympic Avg · % of Avg · Min · Max · % of US
     """
-    _D  = "#0e1614"; _P = "#162019"; _S = "#1e2e2a"
-    _BR = "#243328"; _T = "#e4e8f0"; _M = "#7a9990"
-    _A  = "#4ade80"; _G = "#f59e0b"
+    _D  = "#f5f7fa"; _P = "#edf1f7"; _S = "#e2e8f2"
+    _BR = "#c8d5e3"; _T = "#1a2332"; _M = "#64748b"
+    _A  = "#0693e3"; _G = "#d97706"
 
     def _disp(v):
         if v is None or (isinstance(v, float) and np.isnan(v)): return None
@@ -1929,8 +1931,8 @@ def build_heatmap_table(
         _tr_vals = [_disp(top_row.get(y)) for y in years]
         row_labels.append(f"▶  {top_row_label}")
         row_data.append(_tr_vals)
-        row_bg.append(["#1a2f24"] * len(years))   # distinct dark teal
-        row_fg.append([_G] * len(years))           # gold text — stands out
+        row_bg.append(["#dbeafe"] * len(years))   # pinned row — light blue
+        row_fg.append([_G] * len(years))           # amber text — stands out
         row_is_region.append(True)
 
     for region_name, members in regions.items():
@@ -2001,8 +2003,8 @@ def build_heatmap_table(
         if cur and prev and prev != 0:
             p = (cur - prev) / abs(prev) * 100
             stats_pct_vs_ly.append(_fmt_pct(p))
-            c = "#166534" if p >= 0 else "#991b1b"
-            bg_pct_ly.append(c); fg_pct_ly.append(_A if p >= 0 else "#fca5a5")
+            c = "#dcfce7" if p >= 0 else "#fee2e2"
+            bg_pct_ly.append(c); fg_pct_ly.append("#166534" if p >= 0 else "#991b1b")
         else:
             stats_pct_vs_ly.append("—")
             bg_pct_ly.append(_S); fg_pct_ly.append(_M)
@@ -2015,8 +2017,8 @@ def build_heatmap_table(
         if cur and avg and avg != 0:
             pa = (cur - avg) / abs(avg) * 100
             stats_pct_avg.append(_fmt_pct(pa))
-            c = "#166534" if pa >= 0 else "#991b1b"
-            bg_pct_avg.append(c); fg_pct_avg.append(_A if pa >= 0 else "#fca5a5")
+            c = "#dcfce7" if pa >= 0 else "#fee2e2"
+            bg_pct_avg.append(c); fg_pct_avg.append("#166534" if pa >= 0 else "#991b1b")
         else:
             stats_pct_avg.append("—")
             bg_pct_avg.append(_S); fg_pct_avg.append(_M)
@@ -2108,7 +2110,7 @@ def build_heatmap_table(
         paper_bgcolor=_D,
         margin=dict(l=0, r=0, t=30, b=0),
         height=max(300, n_rows * 26 + 60),
-        title=dict(text=title, font=dict(color="#4ade80", size=13)),
+        title=dict(text=title, font=dict(color=_A, size=13)),
     )
     return fig
 
@@ -2120,8 +2122,8 @@ def build_history_bar(series_dict: dict, years: list, title: str,
     series_dict: {series_name: [value_per_year, ...]}  — values in display units
     years: list of year ints (x-axis)
     """
-    _SERIES_COLORS = ["#4ade80", "#60a5fa", "#f59e0b", "#f87171",
-                      "#a78bfa", "#34d399", "#fb923c"]
+    _SERIES_COLORS = ["#0693e3", "#f59e0b", "#ef4444", "#a78bfa",
+                      "#16a34a", "#fb923c", "#e879f9"]
     series_list = list(series_dict.items())
     n_series     = len(series_list)
     # Pre-compute column totals for top labels
@@ -2182,10 +2184,10 @@ def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
         hovertemplate=f"%{{y}}: %{{x:{fmt}}} {cfg['rank_unit']}<extra></extra>",
     ))
     fig.add_vline(
-        x=avg_disp, line_color="#f5a623", line_width=1.5, line_dash="dash",
+        x=avg_disp, line_color="#d97706", line_width=1.5, line_dash="dash",
         annotation_text=f"  Avg: {avg_disp:{fmt}} {cfg['rank_unit']}",
         annotation_position="top left",
-        annotation_font=dict(color="#f5a623", size=10),
+        annotation_font=dict(color="#d97706", size=10),
     )
     fig.update_layout(
         paper_bgcolor=DARK, plot_bgcolor=SURFACE,
@@ -2208,9 +2210,9 @@ def build_nass_ranking_chart(ranked_df, state, crop, year, metric, change_view):
 
 # One color per ASD district code (10–90)
 _ASD_PALETTE = {
-    "10": "#4ade80", "20": "#60a5fa", "30": "#f59e0b",
-    "40": "#f87171", "50": "#a78bfa", "60": "#34d399",
-    "70": "#fb923c", "80": "#38bdf8", "90": "#e879f9",
+    "10": "#0693e3", "20": "#f59e0b", "30": "#ef4444",
+    "40": "#a78bfa", "50": "#16a34a", "60": "#fb923c",
+    "70": "#38bdf8", "80": "#e879f9", "90": "#6366f1",
 }
 
 
@@ -2256,10 +2258,10 @@ def build_nass_asd_ranking_chart(state_county_v, fips_map, fips_lk,
 
     # State-average reference line
     fig.add_vline(
-        x=avg_disp, line_color="#f5a623", line_width=1.5, line_dash="dash",
+        x=avg_disp, line_color="#d97706", line_width=1.5, line_dash="dash",
         annotation_text=f"  Avg: {avg_disp:{fmt}} {cfg['rank_unit']}",
         annotation_position="top left",
-        annotation_font=dict(color="#f5a623", size=10),
+        annotation_font=dict(color="#d97706", size=10),
     )
 
     # Horizontal separator lines + district label between groups
@@ -3858,7 +3860,7 @@ def main():
             if _lbl_lons:
                 stk_fig.add_trace(go.Scattergeo(
                     lon=_lbl_lons, lat=_lbl_lats, text=_lbl_texts, mode="text",
-                    textfont=dict(color="#cccccc", size=10, family="Arial Black"),
+                    textfont=dict(color="#374151", size=10, family="Arial Black"),
                     showlegend=False, hoverinfo="skip", geo="geo",
                 ))
             _add_logo(stk_fig, logo_50yr, size=0.30, opacity=1.0)
