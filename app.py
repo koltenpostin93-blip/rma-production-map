@@ -18,7 +18,7 @@ st.set_page_config(
     page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
     layout="wide",
 )
-_CACHE_VERSION = "v14"  # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v15"  # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -265,6 +265,9 @@ def load_nass_stat(crop: str, year: int, stat_type: str,
     }
     params.update(NASS_STAT_BASE[stat_type])
     params.update(NASS_CROP_STAT_PARAMS[crop][stat_type])
+    # NASS doesn't publish class_desc=ALL CLASSES at county level for wheat
+    if crop == "Wheat":
+        params.pop("class_desc", None)
     url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(url, timeout=45) as r:
@@ -311,6 +314,13 @@ def load_nass_stat(crop: str, year: int, stat_type: str,
         if not no_all.empty:
             no_all = no_all.loc[no_all.groupby(key)["Value"].idxmax()]
         df = pd.concat([has_all, no_all], ignore_index=True)
+
+    # Wheat is published by class (WINTER / SPRING) at county level — aggregate
+    if crop == "Wheat":
+        if stat_type == "yield":
+            df = df.loc[df.groupby(key)["Value"].idxmax()].reset_index(drop=True)
+        else:
+            df = df.groupby(key, as_index=False)["Value"].sum()
 
     return df[key + ["Value"]].reset_index(drop=True)
 
@@ -408,6 +418,8 @@ def load_nass_county(crop: str, year: int = 2025,
         "format":            "JSON",
     }
     params.update(NASS_CROP_PARAMS[crop])
+    if crop == "Wheat":
+        params.pop("class_desc", None)
     url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(url, timeout=45) as r:
@@ -447,6 +459,15 @@ def load_nass_county(crop: str, year: int = 2025,
 
     # Include district fields when present in the API response
     extra = [c for c in ["asd_desc", "asd_code"] if c in df.columns]
+
+    # Wheat is published by class at county level — sum across classes per county
+    if crop == "Wheat":
+        df_agg = df.groupby(key, as_index=False)["Production"].sum()
+        if extra:
+            df_extra = df.groupby(key)[extra].first().reset_index()
+            df_agg = df_agg.merge(df_extra, on=key, how="left")
+        df = df_agg
+
     return df[key + ["Production"] + extra].reset_index(drop=True)
 
 
@@ -466,6 +487,8 @@ def _load_county_raw_for_est(crop: str, state: str, year: int,
     }
     params.update(NASS_STAT_BASE[stat_type])
     params.update(NASS_CROP_STAT_PARAMS[crop][stat_type])
+    if crop == "Wheat":
+        params.pop("class_desc", None)
     try:
         url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
         with urllib.request.urlopen(url, timeout=45) as r:
@@ -488,6 +511,21 @@ def _load_county_raw_for_est(crop: str, state: str, year: int,
     df["ANSI"]    = df["county_ansi"].str.strip().str.zfill(3)
     df["District"]     = df["asd_desc"].str.strip().str.title() if "asd_desc"  in df.columns else ""
     df["DistrictCode"] = df["asd_code"].str.strip()              if "asd_code"  in df.columns else ""
+
+    # Wheat is published by class at county level — aggregate across classes
+    if crop == "Wheat":
+        agg_key = [c for c in ["State", "County", "ANSI", "fips", "District", "DistrictCode"]
+                   if c in df.columns]
+        if stat_type == "yield":
+            df = df.loc[df.groupby(agg_key)["Value_num"].idxmax()].reset_index(drop=True)
+        else:
+            df_sum = df.groupby(agg_key, as_index=False)["Value_num"].sum()
+            if "prodn_practice_desc" in df.columns:
+                df_prac = df.groupby(agg_key)["prodn_practice_desc"].first().reset_index()
+                df = df_sum.merge(df_prac, on=agg_key, how="left")
+            else:
+                df = df_sum
+
     return df
 
 
