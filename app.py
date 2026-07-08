@@ -2764,11 +2764,16 @@ def main():
             if nass_change == "Current Year":
                 nm1, nm2, nm3, nm4 = st.columns(4)
                 nm1.metric(f"{nass_year} {nass_metric}", _official_kpi_str(_kpi_state))
-                nm2.metric("County Coverage",
-                           f"{_pct_rep:.0f}%",
-                           help=f"{_curr_n:,} counties reporting vs {_bench_n:,} in {_NASS_BENCHMARK_YEAR} benchmark")
-                nm3.metric("Counties Reporting", f"{_curr_n:,}")
-                nm4.metric("States in Data", f"{_st_cur['State'].nunique():,}")
+                if nass_year == FORECAST_YEAR and nass_df.empty:
+                    nm2.metric("County Coverage", "Forecast", help="County data not yet published for 2026")
+                    nm3.metric("Counties Reporting", "—")
+                    nm4.metric("States in Data", f"{len(states_avail_nass):,}")
+                else:
+                    nm2.metric("County Coverage",
+                               f"{_pct_rep:.0f}%",
+                               help=f"{_curr_n:,} counties reporting vs {_bench_n:,} in {_NASS_BENCHMARK_YEAR} benchmark")
+                    nm3.metric("Counties Reporting", f"{_curr_n:,}")
+                    nm4.metric("States in Data", f"{_st_cur['State'].nunique():,}")
             else:
                 nm1, nm2, nm3, nm4 = st.columns(4)
                 nm1.metric(f"{nass_year} {nass_metric}", _official_kpi_str(_kpi_state))
@@ -2783,7 +2788,14 @@ def main():
 
             # ── Map ───────────────────────────────────────────────────────────
             if sel_st is None:
-                if state_vdf.empty:
+                if state_vdf.empty and nass_year == FORECAST_YEAR:
+                    st.info(
+                        f"**{FORECAST_YEAR} Forecast** — National overview not available for "
+                        f"{nass_metric} (NASS has not yet published {nass_year} yield or "
+                        "production). Use the **State Drill-Down** above to view ASD district "
+                        "forecasts for a specific state."
+                    )
+                elif state_vdf.empty:
                     st.info(
                         "No comparison data available for the selected view and year range. "
                         "Try selecting a different year or view."
