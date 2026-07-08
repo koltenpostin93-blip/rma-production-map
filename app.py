@@ -2699,13 +2699,18 @@ def main():
                     [_load_state_for_stat(nass_crop, y, stat_type, _CACHE_VERSION) for y in _sy],
                 )
 
-        if nass_df.empty:
+        if nass_df.empty and nass_year != FORECAST_YEAR:
             st.warning(
                 f"No NASS {nass_year} county-level production data returned for {nass_crop}. "
                 "The data may not yet be published or the API parameters may need adjustment."
             )
         else:
-            states_avail_nass = sorted(nass_df["State"].unique())
+            # Forecast year: build state list from NASS state planted data (already published)
+            if nass_year == FORECAST_YEAR and nass_df.empty:
+                _fc_st_avail = _load_nass_state_forecast(nass_crop, "planted", _CACHE_VERSION)
+                states_avail_nass = sorted(_fc_st_avail["State"].unique()) if not _fc_st_avail.empty else []
+            else:
+                states_avail_nass = sorted(nass_df["State"].unique())
             with nc3:
                 state_opts_nass = ["— US Overview —"] + [
                     f"{a}  —  {ABBR_TO_NAME.get(a, a)}" for a in states_avail_nass
