@@ -2833,30 +2833,33 @@ def main():
                 if _is_forecast_year:
                     _yield_key = f"fc_yield_{nass_crop}_{nass_state}"
                     if _yield_key not in st.session_state:
-                        st.session_state[_yield_key] = float(
-                            _get_default_yield_est(nass_crop, nass_state, _CACHE_VERSION)
+                        _def_yield = _get_default_yield_est(
+                            nass_crop, nass_state, _CACHE_VERSION
                         )
+                        st.session_state[_yield_key] = _def_yield if _def_yield > 0 else 0.0
+                    _nass_st_yield_avail = _nass_has_official(
+                        nass_crop, nass_state, FORECAST_YEAR, "yield", _CACHE_VERSION
+                    )
+                    _banner_extra = (
+                        " NASS yield is now available — your estimate overrides it."
+                        if _nass_st_yield_avail else ""
+                    )
                     st.info(
                         f"**{FORECAST_YEAR} Forecast** — NASS has not yet published "
                         f"{nass_crop} yield or production for "
                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}. "
                         "Enter a yield estimate below to project ASD district production."
+                        + _banner_extra
                     )
-                    _fc_col1, _fc_col2, _ = st.columns([1.2, 1, 2.8])
+                    _fc_col1, _, _ = st.columns([1.2, 1, 2.8])
                     with _fc_col1:
+                        # Use key-only pattern — session_state holds the value
                         _yield_input = st.number_input(
                             f"{nass_crop} Yield Est. (bu/ac)",
                             min_value=0.0, max_value=500.0,
-                            value=float(st.session_state[_yield_key]),
                             step=0.5, format="%.1f",
                             key=_yield_key,
                         )
-                    with _fc_col2:
-                        _nass_st_yield_avail = _nass_has_official(
-                            nass_crop, nass_state, FORECAST_YEAR, "yield", _CACHE_VERSION
-                        )
-                        if _nass_st_yield_avail:
-                            st.success("NASS yield published — override active")
                     if _yield_input > 0:
                         _fc_stats, _fc_state_totals = get_asd_forecast_data(
                             nass_crop, nass_state, _yield_input, _CACHE_VERSION
