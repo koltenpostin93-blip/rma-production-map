@@ -106,6 +106,27 @@ NASS_STAT_BASE = {
     "prevent_plant": {"statisticcat_desc": "AREA PLANTED",    "unit_desc": "ACRES"},
 }
 
+# ── Acreage Summary — principal crop params ─────────────────────────────────
+# Tuples so they're hashable for @st.cache_data
+_ACR_PARAMS: dict = {
+    "Wheat":      (("commodity_desc","WHEAT"),("class_desc","ALL CLASSES")),
+    "Corn":       (("commodity_desc","CORN"),),
+    "Sorghum":    (("commodity_desc","SORGHUM"),),
+    "Barley":     (("commodity_desc","BARLEY"),),
+    "Oats":       (("commodity_desc","OATS"),),
+    "Soybeans":   (("commodity_desc","SOYBEANS"),),
+    "Sunflowers": (("commodity_desc","SUNFLOWERS"),("class_desc","ALL CLASSES")),
+    "Canola":     (("commodity_desc","CANOLA"),),
+    "Cotton":     (("commodity_desc","COTTON"),("class_desc","ALL CLASSES")),
+    "Rice":       (("commodity_desc","RICE"),),
+    "Peanuts":    (("commodity_desc","PEANUTS"),),
+    "SugarBeets": (("commodity_desc","SUGARBEETS"),),
+    "DryBeans":   (("commodity_desc","BEANS, DRY EDIBLE"),("class_desc","ALL CLASSES")),
+    "Hay":        (("commodity_desc","HAY"),("class_desc","ALL CLASSES")),
+}
+# crops that produce prevent-plant data through NASS
+_ACR_PP_CROPS = ("Corn","Soybeans","Wheat","Cotton","Sorghum","Rice","Peanuts","SugarBeets","DryBeans","Barley","Oats","Sunflowers","Canola")
+
 # Legacy — kept for backward compat with any cached references
 NASS_CROP_PARAMS = {
     "Corn":     {"commodity_desc": "CORN",    "util_practice_desc": "GRAIN"},
@@ -1424,6 +1445,243 @@ def _nass_has_official(crop: str, state: str, year: int, stat_type: str,
     return not df.empty and state in df["State"].values
 
 
+@st.cache_data(show_spinner=False)
+def load_acreage_crop_hist(
+    crop_key: str,
+    crop_params: tuple,          # tuple of (k,v) pairs — hashable
+    start_yr: int, end_yr: int,
+    state_abbr: str,             # "" = national
+    prevent_plant: bool,
+    cache_ver: str,
+) -> dict:
+    """
+    Fetch planted (or prevent-plant) acres from NASS for a crop across a year range.
+    Returns {calendar_year: million_acres}.
+    """
+    params = {
+        "key": NASS_API_KEY,
+        "source_desc": "SURVEY",
+        "sector_desc": "CROPS",
+        "agg_level_desc": "STATE" if state_abbr else "NATIONAL",
+        "domain_desc": "TOTAL",
+        "statisticcat_desc": "AREA PLANTED",
+        "unit_desc": "ACRES",
+        "year__GE": str(start_yr),
+        "year__LE": str(end_yr),
+        "format": "JSON",
+    }
+    for k, v in crop_params:
+        params[k] = v
+    if state_abbr:
+        params["state_alpha"] = state_abbr
+    try:
+        with urllib.request.urlopen(
+            NASS_BASE_URL + "?" + urllib.parse.urlencode(params), timeout=60
+        ) as r:
+            records = json.load(r).get("data", [])
+    except Exception:
+        return {}
+    if not records:
+        return {}
+    df = pd.DataFrame(records)
+    # Filter prevent-plant or regular planted
+    if "short_desc" in df.columns:
+        if prevent_plant:
+            df = df[df["short_desc"].str.upper().str.contains("PREVENT", na=False)]
+        else:
+            df = df[~df["short_desc"].str.upper().str.contains("PREVENT", na=False)]
+    if df.empty:
+        return {}
+    df["val"] = pd.to_numeric(
+        df["Value"].str.replace(",","",regex=False), errors="coerce"
+    )
+    df["yr"] = pd.to_numeric(df["year"], errors="coerce")
+    # Keep only "YEAR" reference period when column present
+    if "reference_period_desc" in df.columns:
+        yr_rows = df[df["reference_period_desc"] == "YEAR"]
+        if not yr_rows.empty:
+            df = yr_rows
+    # Keep ALL PRODUCTION PRACTICES when available, else use all
+    if "prodn_practice_desc" in df.columns:
+        all_p = df[df["prodn_practice_desc"] == "ALL PRODUCTION PRACTICES"]
+        if not all_p.empty:
+            df = all_p
+    df = df.dropna(subset=["yr","val"])
+    out: dict = {}
+    for yr_val, grp in df.groupby("yr"):
+        out[int(yr_val)] = float(grp["val"].sum()) / 1_000_000   # → mil ac
+    return out
+
+
+def _render_acreage_html(rows: list, years: list,
+                          title: str, scope_label: str) -> str:
+    """
+    Build PRX-style HTML table.
+    rows: list of {col_key: value_or_None} dicts, one per year (oldest→newest).
+    years: matching calendar years.
+    Returns full HTML string.
+    """
+    # ── style constants ──────────────────────────────────────────────────────
+    HDR1  = ACCENT          # group header bg
+    HDR2  = "#0578c4"       # sub-header bg (slightly darker)
+    UNIT  = "#e8f4fd"       # units row bg
+    ROW_E = DARK            # even rows
+    ROW_O = "#ffffff"       # odd rows
+    CUR   = "#dbeafe"       # current-year highlight
+    CHG_P = "#dcfce7"       # change row positive bg
+    CHG_N = "#fee2e2"       # change row negative bg
+    CHG_0 = SURFACE         # change row neutral bg
+    FP    = "#166534"       # positive text
+    FN    = "#991b1b"       # negative text
+    TXT   = TEXT
+    MUT   = MUTED
+    W     = "white"
+
+    def _fmt(v, decimals=1):
+        if v is None or (isinstance(v, float) and (np.isnan(v) or v == 0)):
+            return "—"
+        return f"{v:,.{decimals}f}"
+
+    # ── column schema ────────────────────────────────────────────────────────
+    # (key, display, group, group_span_start)
+    cols = [
+        # key,              label,          group,       span_of_group
+        ("mkt_yr",          "Crop<br>Year",  None,        0),
+        ("Wheat",           "All<br>Wheat",  None,        0),
+        # ── Feedgrains
+        ("Corn",            "Corn",          "Feedgrains", 5),
+        ("Sorghum",         "Sorg",          "Feedgrains", 0),
+        ("Barley",          "Barley",        "Feedgrains", 0),
+        ("Oats",            "Oats",          "Feedgrains", 0),
+        ("FG_Total",        "Total",         "Feedgrains", 0),
+        # ── Oilseeds
+        ("Soybeans",        "Soy",           "Oilseeds",   4),
+        ("Sunflowers",      "Sunseed",       "Oilseeds",   0),
+        ("Canola",          "Canola",        "Oilseeds",   0),
+        ("OS_Total",        "Total",         "Oilseeds",   0),
+        # ── stand-alone
+        ("CornSoy",         "Corn+Soy",      None,         0),
+        ("Cotton",          "Cotton",        None,         0),
+        ("Total_Major",     "Total<br>Major",None,         0),
+        ("HayOther",        "All Hay<br>& Other", None,   0),
+        ("Principal",       "Principal<br>Crops", None,   0),
+        ("CRP",             "CRP*",          None,         0),
+        ("TotalCRP",        "Total<br>w/CRP",None,        0),
+        # ── Prevent Plant
+        ("PP_Major",        "Cn/Soy/<br>Wht",  "Prevent Acres", 3),
+        ("PP_Other",        "All<br>Other",     "Prevent Acres", 0),
+        ("PP_Total",        "Total<br>w/PP",    "Prevent Acres", 0),
+    ]
+
+    def _th(text, bg, fg=W, rowspan=1, colspan=1, extra=""):
+        rs = f' rowspan="{rowspan}"' if rowspan > 1 else ""
+        cs = f' colspan="{colspan}"' if colspan > 1 else ""
+        return (f'<th{rs}{cs} style="background:{bg};color:{fg};'
+                f'padding:4px 6px;text-align:center;font-size:0.72rem;'
+                f'border:1px solid #c8d5e3;white-space:nowrap;{extra}">'
+                f'{text}</th>')
+
+    def _td(text, bg=ROW_E, fg=TXT, bold=False, align="right", extra=""):
+        b = "font-weight:600;" if bold else ""
+        return (f'<td style="background:{bg};color:{fg};{b}'
+                f'padding:3px 7px;text-align:{align};font-size:0.72rem;'
+                f'border:1px solid #dde8f0;white-space:nowrap;{extra}">'
+                f'{text}</td>')
+
+    # ── build header rows ────────────────────────────────────────────────────
+    # Row 1: group headers
+    h1 = ""
+    skip_until = 0
+    for i,(key,lbl,grp,span) in enumerate(cols):
+        if i < skip_until:
+            continue
+        if grp is None:
+            h1 += _th(lbl, HDR1, rowspan=2)
+        else:
+            h1 += _th(grp, HDR2, colspan=span)
+            skip_until = i + span
+
+    # Row 2: sub-column headers (only for grouped cols)
+    h2 = ""
+    for key,lbl,grp,span in cols:
+        if grp is not None:
+            h2 += _th(lbl, HDR2)
+
+    # Units row
+    unit_lbl = "mil ac"
+    h3 = ""
+    for key,lbl,grp,span in cols:
+        if key == "mkt_yr":
+            h3 += _td("", bg=UNIT, fg=MUT, align="center")
+        else:
+            h3 += _td(unit_lbl, bg=UNIT, fg=MUT, align="center")
+
+    thead = (f'<thead><tr>{h1}</tr><tr>{h2}</tr>'
+             f'<tr>{h3}</tr></thead>')
+
+    # ── build body rows ──────────────────────────────────────────────────────
+    tbody = "<tbody>"
+    cur_yr = years[-1] if years else None
+    for i,(yr, row) in enumerate(zip(years, rows)):
+        is_cur = (yr == cur_yr)
+        bg = CUR if is_cur else (ROW_O if i % 2 else ROW_E)
+        tr = f'<tr style="background:{bg};">'
+        for key,lbl,grp,span in cols:
+            v = row.get(key)
+            if key == "mkt_yr":
+                txt = str(v) if v else "—"
+                tr += _td(txt, bg=bg, fg=ACCENT if is_cur else TXT,
+                          bold=is_cur, align="center")
+            else:
+                tr += _td(_fmt(v), bg=bg, fg=TXT, bold=is_cur)
+        tr += "</tr>"
+        tbody += tr
+
+    # ── year-over-year change row ────────────────────────────────────────────
+    if len(rows) >= 2:
+        prev_row = rows[-2]
+        cur_row  = rows[-1]
+        tbody += f'<tr style="border-top:2px solid {BORDER};">'
+        for key,lbl,grp,span in cols:
+            if key == "mkt_yr":
+                tbody += _td("Chg vs Prior Yr", bg=SURFACE, fg=MUT,
+                             bold=True, align="center")
+                continue
+            cv = cur_row.get(key)
+            pv = prev_row.get(key)
+            if cv is None or pv is None:
+                tbody += _td("—", bg=SURFACE, fg=MUT)
+                continue
+            delta = cv - pv
+            if abs(delta) < 0.05:
+                chg_bg, chg_fg = CHG_0, MUT
+            elif delta > 0:
+                chg_bg, chg_fg = CHG_P, FP
+            else:
+                chg_bg, chg_fg = CHG_N, FN
+            sign = "+" if delta > 0 else ""
+            tbody += _td(f"{sign}{delta:.1f}", bg=chg_bg, fg=chg_fg, bold=True)
+        tbody += "</tr>"
+
+    tbody += "</tbody>"
+
+    scope_note = f" — {scope_label}" if scope_label and scope_label != "National" else ""
+    html = f"""
+<div style="overflow-x:auto;">
+<p style="font-size:0.9rem;font-weight:700;color:{TXT};margin:0 0 4px 0;text-align:center;">
+  US Major Field Crops Area Planted{scope_note}</p>
+<p style="font-size:0.72rem;color:{MUT};margin:0 0 8px 0;text-align:center;">
+  {title} &nbsp;|&nbsp; mil ac</p>
+<table style="border-collapse:collapse;width:100%;font-family:sans-serif;">
+{thead}{tbody}
+</table>
+<p style="font-size:0.7rem;color:{MUT};margin:4px 0 0 0;">
+  * CRP = Conservation Reserve Program (FSA) — data pending user input.
+  Prevent Plant from USDA NASS surveys. Values in million acres.</p>
+</div>"""
+    return html
+
+
 def _state_pct_change(cur_df: pd.DataFrame, cmp_df: pd.DataFrame) -> pd.DataFrame:
     """Compute state-level % change: (cur - cmp) / cmp * 100.
     Both inputs are [State, Value]. Returns [State, Value] with % change."""
@@ -2601,9 +2859,9 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_nass, tab_rma, tab_stocks, tab_about = st.tabs([
+    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_about = st.tabs([
         "🌾  NASS Production", "📋  RMA",
-        "📦  Grain Stocks", "📖  About the Data",
+        "📦  Grain Stocks", "🌱  Acreage Summary", "📖  About the Data",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -4264,6 +4522,133 @@ def main():
                 "Total Supply = Sep 1 beginning stocks + crop year production. "
                 "Source: USDA NASS Grain Stocks Survey and Crop Production (state level only)."
             )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ACREAGE SUMMARY TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_acreage:
+        # ── Controls ──────────────────────────────────────────────────────────
+        _ac1, _ac2, _ac3 = st.columns([1.5, 1, 2.5])
+        with _ac1:
+            _acr_states = ["National"] + sorted(ABBR_TO_NAME.keys())
+            _acr_state  = st.selectbox(
+                "Geography", _acr_states, key="acr_state",
+                format_func=lambda x: x if x == "National"
+                             else f"{x}  —  {ABBR_TO_NAME.get(x, x)}",
+            )
+        with _ac2:
+            _acr_n_yrs = st.radio(
+                "Years shown", [10, 15, 20],
+                horizontal=True, key="acr_n_yrs", index=1,
+            )
+
+        _acr_state_abbr = "" if _acr_state == "National" else _acr_state
+        _acr_end_yr   = max(NASS_YEARS[-1], FORECAST_YEAR)
+        _acr_start_yr = _acr_end_yr - _acr_n_yrs + 1
+        _acr_cal_yrs  = list(range(_acr_start_yr, _acr_end_yr + 1))
+
+        def _mkt_yr(y: int) -> str:
+            return f"{str(y)[2:]}-{str(y+1)[2:]}"
+
+        # ── Fetch all crops ───────────────────────────────────────────────────
+        with st.spinner("Loading acreage data…"):
+            _acr: dict = {}   # {crop_key: {yr: mil_ac}}
+            _pp:  dict = {}   # {crop_key: {yr: mil_ac}}
+            for _ck, _cp in _ACR_PARAMS.items():
+                _acr[_ck] = load_acreage_crop_hist(
+                    _ck, _cp, _acr_start_yr, _acr_end_yr,
+                    _acr_state_abbr, False, _CACHE_VERSION
+                )
+                if _ck in _ACR_PP_CROPS:
+                    _pp[_ck] = load_acreage_crop_hist(
+                        _ck, _cp, _acr_start_yr, _acr_end_yr,
+                        _acr_state_abbr, True, _CACHE_VERSION
+                    )
+
+        # ── Build rows ────────────────────────────────────────────────────────
+        def _g(crop, yr):
+            """Safe get — mil ac or None."""
+            return _acr.get(crop, {}).get(yr)
+
+        def _gp(crop, yr):
+            return _pp.get(crop, {}).get(yr)
+
+        def _s(*vals):
+            """Sum non-None values, return None if all None."""
+            vs = [v for v in vals if v is not None]
+            return sum(vs) if vs else None
+
+        _acr_rows = []
+        for _yr in _acr_cal_yrs:
+            _wh  = _g("Wheat",     _yr)
+            _co  = _g("Corn",      _yr)
+            _sg  = _g("Sorghum",   _yr)
+            _ba  = _g("Barley",    _yr)
+            _oa  = _g("Oats",      _yr)
+            _sy  = _g("Soybeans",  _yr)
+            _su  = _g("Sunflowers",_yr)
+            _ca  = _g("Canola",    _yr)
+            _ct  = _g("Cotton",    _yr)
+            _ri  = _g("Rice",      _yr)
+            _pe  = _g("Peanuts",   _yr)
+            _sb  = _g("SugarBeets",_yr)
+            _db  = _g("DryBeans",  _yr)
+            _ha  = _g("Hay",       _yr)
+            _fg  = _s(_co, _sg, _ba, _oa)
+            _os  = _s(_sy, _su, _ca)
+            _csoy= _s(_co, _sy)
+            _tmaj= _s(_wh, _fg, _os, _ct)
+            _oth = _s(_ri, _pe, _sb, _db)
+            _hayo= _s(_ha, _oth)
+            _prin= _s(_tmaj, _hayo)
+            # PP
+            _pp_co  = _gp("Corn",     _yr)
+            _pp_sy  = _gp("Soybeans", _yr)
+            _pp_wh  = _gp("Wheat",    _yr)
+            _pp_maj = _s(_pp_co, _pp_sy, _pp_wh)
+            _pp_oth_vals = [_gp(k, _yr) for k in _ACR_PP_CROPS
+                            if k not in ("Corn","Soybeans","Wheat")]
+            _pp_oth = _s(*_pp_oth_vals)
+            _pp_tot = _s(_pp_maj, _pp_oth)
+            _acr_rows.append({
+                "mkt_yr":     _mkt_yr(_yr),
+                "Wheat":      _wh,
+                "Corn":       _co,
+                "Sorghum":    _sg,
+                "Barley":     _ba,
+                "Oats":       _oa,
+                "FG_Total":   _fg,
+                "Soybeans":   _sy,
+                "Sunflowers": _su,
+                "Canola":     _ca,
+                "OS_Total":   _os,
+                "CornSoy":    _csoy,
+                "Cotton":     _ct,
+                "Total_Major":_tmaj,
+                "HayOther":   _hayo,
+                "Principal":  _prin,
+                "CRP":        None,   # placeholder — user will add
+                "TotalCRP":   None,
+                "PP_Major":   _pp_maj,
+                "PP_Other":   _pp_oth,
+                "PP_Total":   _pp_tot,
+            })
+
+        # ── Render ────────────────────────────────────────────────────────────
+        _scope_lbl = "National" if not _acr_state_abbr else f"{_acr_state_abbr}  —  {ABBR_TO_NAME.get(_acr_state_abbr,'')}"
+        _tbl_title = f"{_mkt_yr(_acr_start_yr)} to {_mkt_yr(_acr_end_yr)}"
+        _html = _render_acreage_html(
+            _acr_rows, _acr_cal_yrs, _tbl_title, _scope_lbl
+        )
+        st.markdown(_html, unsafe_allow_html=True)
+
+        st.markdown(
+            f"<p style='font-size:0.72rem;color:{MUTED};margin-top:8px;'>"
+            "Source: USDA NASS QuickStats. Prevent Plant from NASS survey data. "
+            "CRP column reserved for FSA Conservation Reserve Program enrollment data."
+            "</p>",
+            unsafe_allow_html=True,
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABOUT THE DATA TAB
