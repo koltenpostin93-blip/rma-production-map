@@ -2824,6 +2824,21 @@ def cached_rma_county_fig(state: str, crop: str, metric: str,
                             metric, crop_label, practice, _logo_50yr)
 
 
+def _auto_bu(mx: float) -> tuple:
+    """Return (divisor, label) to scale a bushel quantity to a readable unit."""
+    if mx >= 500e6: return 1e9, "B bu"
+    if mx >= 1e6:   return 1e6, "M bu"
+    if mx >= 1e3:   return 1e3, "K bu"
+    return 1, "bu"
+
+
+def _auto_ac(mx: float) -> tuple:
+    """Return (divisor, label) to scale an acreage quantity to a readable unit."""
+    if mx >= 500e3: return 1e6, "M ac"
+    if mx >= 1e3:   return 1e3, "K ac"
+    return 1, "ac"
+
+
 # ── App ────────────────────────────────────────────────────────────────────────
 def main():
     st.markdown(
