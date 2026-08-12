@@ -18,7 +18,7 @@ st.set_page_config(
     page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
     layout="wide",
 )
-_CACHE_VERSION = "v15"  # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v16"  # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -1570,11 +1570,14 @@ def load_acreage_crop_hist(
 
 
 def _render_acreage_html(rows: list, years: list,
-                          title: str, scope_label: str) -> str:
+                          title: str, scope_label: str,
+                          unit_mul: float = 1.0,
+                          unit_lbl: str = "mil ac") -> str:
     """
     Build PRX-style HTML table.
     rows: list of {col_key: value_or_None} dicts, one per year (oldest→newest).
     years: matching calendar years.
+    unit_mul: multiply stored M-ac values before display (1.0=M ac, 1000=K ac).
     Returns full HTML string.
     """
     # ── style constants ──────────────────────────────────────────────────────
@@ -1596,7 +1599,7 @@ def _render_acreage_html(rows: list, years: list,
     def _fmt(v, decimals=1):
         if v is None or (isinstance(v, float) and (np.isnan(v) or v == 0)):
             return "—"
-        return f"{v:,.{decimals}f}"
+        return f"{v * unit_mul:,.{decimals}f}"
 
     # ── column schema ────────────────────────────────────────────────────────
     # (key, display, group, group_span_start)
@@ -1664,7 +1667,6 @@ def _render_acreage_html(rows: list, years: list,
             h2 += _th(lbl, HDR2)
 
     # Units row
-    unit_lbl = "mil ac"
     h3 = ""
     for key,lbl,grp,span in cols:
         if key == "mkt_yr":
@@ -1716,7 +1718,7 @@ def _render_acreage_html(rows: list, years: list,
             else:
                 chg_bg, chg_fg = CHG_N, FN
             sign = "+" if delta > 0 else ""
-            tbody += _td(f"{sign}{delta:.1f}", bg=chg_bg, fg=chg_fg, bold=True)
+            tbody += _td(f"{sign}{delta * unit_mul:.1f}", bg=chg_bg, fg=chg_fg, bold=True)
         tbody += "</tr>"
 
     tbody += "</tbody>"
@@ -1727,13 +1729,12 @@ def _render_acreage_html(rows: list, years: list,
 <p style="font-size:0.9rem;font-weight:700;color:{TXT};margin:0 0 4px 0;text-align:center;">
   US Major Field Crops Area Planted{scope_note}</p>
 <p style="font-size:0.72rem;color:{MUT};margin:0 0 8px 0;text-align:center;">
-  {title} &nbsp;|&nbsp; mil ac</p>
+  {title} &nbsp;|&nbsp; {unit_lbl}</p>
 <table style="border-collapse:collapse;width:100%;font-family:sans-serif;">
 {thead}{tbody}
 </table>
 <p style="font-size:0.7rem;color:{MUT};margin:4px 0 0 0;">
-  * CRP = Conservation Reserve Program (FSA) — data pending user input.
-  Prevent Plant from USDA NASS surveys. Values in million acres.</p>
+  * CRP = Conservation Reserve Program (FSA). Prevent Plant from USDA RMA. Values in {unit_lbl}.</p>
 </div>"""
     return html
 
@@ -4728,8 +4729,20 @@ def main():
         # ── Render ────────────────────────────────────────────────────────────
         _scope_lbl = "National" if not _acr_state_abbr else f"{_acr_state_abbr}  —  {ABBR_TO_NAME.get(_acr_state_abbr,'')}"
         _tbl_title = f"{_mkt_yr(_acr_start_yr)} to {_mkt_yr(_acr_end_yr)}"
+
+        # Auto-scale: pick unit based on the largest individual crop value
+        _INDV_KEYS = ("Corn","Soybeans","Wheat","Cotton","Sorghum","Barley","Oats","Sunflowers","Canola")
+        _max_indv = max((row.get(k) or 0.0 for row in _acr_rows for k in _INDV_KEYS), default=0.0)
+        if _max_indv >= 2.0:
+            _tbl_mul, _tbl_unit = 1.0, "mil ac"
+        elif _max_indv >= 0.002:
+            _tbl_mul, _tbl_unit = 1000.0, "K ac"
+        else:
+            _tbl_mul, _tbl_unit = 1_000_000.0, "ac"
+
         _html = _render_acreage_html(
-            _acr_rows, _acr_cal_yrs, _tbl_title, _scope_lbl
+            _acr_rows, _acr_cal_yrs, _tbl_title, _scope_lbl,
+            unit_mul=_tbl_mul, unit_lbl=_tbl_unit,
         )
         st.markdown(_html, unsafe_allow_html=True)
 
