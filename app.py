@@ -4621,6 +4621,21 @@ def main():
                         _acr_state_abbr, True, _CACHE_VERSION
                     )
 
+        # ── RMA prevent-plant lookup (NASS QuickStats lacks PP data) ────────────
+        _rma_pp_by_yr: dict = {}   # {yr: {crop_key: mil_ac}}
+        for _rma_crop, _pp_ck in [("Corn","Corn"),("Soybeans","Soybeans"),("Wheat","Wheat")]:
+            if _rma_crop not in rma_data:
+                continue
+            _rdf = rma_data[_rma_crop].copy()
+            if "Prev Plant Acres" not in _rdf.columns or "Yield Year" not in _rdf.columns:
+                continue
+            if _acr_state_abbr:
+                _rdf = _rdf[_rdf["State"] == _acr_state_abbr]
+            _rdf["_yr"] = pd.to_numeric(_rdf["Yield Year"], errors="coerce")
+            _rdf["_ppv"] = pd.to_numeric(_rdf["Prev Plant Acres"], errors="coerce").fillna(0)
+            for _ryr, _rgrp in _rdf.groupby("_yr"):
+                _rma_pp_by_yr.setdefault(int(_ryr), {})[_pp_ck] = float(_rgrp["_ppv"].sum()) / 1e6
+
         # ── Build rows ────────────────────────────────────────────────────────
         def _g(crop, yr):
             """Safe get — mil ac or None."""
@@ -4660,10 +4675,11 @@ def main():
             _oth = _s(_ri, _pe, _sb, _db)
             _hayo= _s(_ha, _oth)
             _prin= _s(_tmaj, _hayo)
-            # PP
-            _pp_co  = _gp("Corn",     _yr)
-            _pp_sy  = _gp("Soybeans", _yr)
-            _pp_wh  = _gp("Wheat",    _yr)
+            # PP — sourced from RMA Excel (Corn/Soy/Wht only; NASS lacks PP)
+            _pp_yr_d = _rma_pp_by_yr.get(_yr, {})
+            _pp_co  = _gp("Corn",     _yr) or _pp_yr_d.get("Corn")
+            _pp_sy  = _gp("Soybeans", _yr) or _pp_yr_d.get("Soybeans")
+            _pp_wh  = _gp("Wheat",    _yr) or _pp_yr_d.get("Wheat")
             _pp_maj = _s(_pp_co, _pp_sy, _pp_wh)
             _pp_oth_vals = [_gp(k, _yr) for k in _ACR_PP_CROPS
                             if k not in ("Corn","Soybeans","Wheat")]
@@ -4704,11 +4720,104 @@ def main():
 
         st.markdown(
             f"<p style='font-size:0.72rem;color:{MUTED};margin-top:8px;'>"
-            "Source: USDA NASS QuickStats (planted acres &amp; prevent plant). "
-            "CRP enrollment: USDA FSA CRPHistoryState86-25 (fiscal year = planting calendar year, million acres)."
+            "Planted acres: USDA NASS QuickStats. "
+            "Prevent Plant (Cn/Soy/Wht only): USDA RMA Summary of Business — years available in RMA Excel. "
+            "CRP: USDA FSA CRPHistoryState86-25 (fiscal year = planting calendar year), million acres."
             "</p>",
             unsafe_allow_html=True,
         )
+
+        # ── Acreage Trend Chart ───────────────────────────────────────────────
+        st.markdown(
+            f"<div style='margin-top:28px;'>"
+            f"<h4 style='color:{ACCENT};margin:0 0 2px 0;font-size:1rem;font-weight:600;'>"
+            "Planted Acres Trend</h4>"
+            f"<p style='color:{MUTED};font-size:0.78rem;margin:0 0 12px 0;'>"
+            "Select one or more crops / aggregates to compare over time.</p></div>",
+            unsafe_allow_html=True,
+        )
+
+        _CHART_COLS: dict = {
+            "Corn":               "Corn",
+            "Soybeans":           "Soybeans",
+            "All Wheat":          "Wheat",
+            "Sorghum":            "Sorghum",
+            "Barley":             "Barley",
+            "Oats":               "Oats",
+            "Sunflowers":         "Sunflowers",
+            "Canola":             "Canola",
+            "Cotton":             "Cotton",
+            "Feedgrains Total":   "FG_Total",
+            "Oilseeds Total":     "OS_Total",
+            "Corn + Soy":         "CornSoy",
+            "Hay & Other":        "HayOther",
+            "Total Major Crops":  "Total_Major",
+            "Principal Crops":    "Principal",
+            "CRP":                "CRP",
+            "Total w/CRP":        "TotalCRP",
+            "Prevent Plant Total":"PP_Total",
+        }
+        # Categorical palette — JPSI blue anchors position 1, then colorblind-safe spread
+        _CHART_COLORS = [
+            "#0693e3","#f97316","#22c55e","#a855f7",
+            "#ef4444","#ca8a04","#06b6d4","#ec4899",
+            "#84cc16","#8b5cf6",
+        ]
+
+        _acr_chart_sel = st.multiselect(
+            "Commodities",
+            options=list(_CHART_COLS.keys()),
+            default=["Corn", "Soybeans", "All Wheat", "CRP"],
+            key="acr_chart_sel",
+            label_visibility="collapsed",
+        )
+
+        if _acr_chart_sel and _acr_rows:
+            _cfig = go.Figure()
+            _x_labs = [row["mkt_yr"] for row in _acr_rows]
+            for _ci, _clbl in enumerate(_acr_chart_sel):
+                _ckey = _CHART_COLS[_clbl]
+                _ys   = [row.get(_ckey) for row in _acr_rows]
+                _x_pt = [_x_labs[i] for i, y in enumerate(_ys) if y is not None]
+                _y_pt = [y for y in _ys if y is not None]
+                _cc   = _CHART_COLORS[_ci % len(_CHART_COLORS)]
+                _cfig.add_trace(go.Scatter(
+                    x=_x_pt, y=_y_pt,
+                    mode="lines+markers",
+                    name=_clbl,
+                    line=dict(color=_cc, width=2),
+                    marker=dict(color=_cc, size=5,
+                                line=dict(color="#ffffff", width=1)),
+                    hovertemplate=(
+                        f"<b>{_clbl}</b><br>"
+                        "%{x}: %{y:.2f}M ac<extra></extra>"
+                    ),
+                ))
+            _cfig.update_layout(
+                yaxis_title="Million Acres",
+                xaxis_title="Marketing Year",
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font=dict(size=11),
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                height=440,
+                margin=dict(l=60, r=20, t=56, b=80),
+                plot_bgcolor=PANEL,
+                paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=TEXT, family="sans-serif", size=12),
+                xaxis=dict(
+                    tickangle=-45, showgrid=False,
+                    linecolor=BORDER, tickfont=dict(size=10),
+                    zeroline=False,
+                ),
+                yaxis=dict(
+                    gridcolor=BORDER, gridwidth=1,
+                    zeroline=False, tickfont=dict(size=10),
+                ),
+            )
+            st.plotly_chart(_cfig, use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABOUT THE DATA TAB
