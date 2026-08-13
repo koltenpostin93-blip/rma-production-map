@@ -3647,17 +3647,6 @@ def main():
                     # don't show as 0.3 B bu when M bu is more readable
                     _nc_max = max((v for v in _nc_vals if v), default=0)
 
-                    def _auto_bu(mx):
-                        if mx >= 500e6:  return 1e9, "B bu"
-                        if mx >= 1e6:   return 1e6, "M bu"
-                        if mx >= 1e3:   return 1e3, "K bu"
-                        return 1, "bu"
-
-                    def _auto_ac(mx):
-                        if mx >= 500e3:  return 1e6, "M ac"
-                        if mx >= 1e3:    return 1e3, "K ac"
-                        return 1, "ac"
-
                     if nass_metric == "Production (bu)":
                         _nc_unit, _nc_y_lbl = _auto_bu(_nc_max)
                     elif nass_metric in ("Planted Acres", "Harvested Acres",
