@@ -128,20 +128,46 @@ _ACR_PARAMS: dict = {
 _ACR_PP_CROPS = ("Corn","Soybeans","Wheat","Cotton","Sorghum","Rice","Peanuts","SugarBeets","DryBeans","Barley","Oats","Sunflowers","Canola")
 
 _LIVESTOCK_SPECIES: dict = {
+    # Livestock inventory (HEAD, INVENTORY)
     "Cattle, All":        {"commodity_desc": "CATTLE",        "class_desc": "INCL CALVES"},
     "Cattle, Beef Cows":  {"commodity_desc": "CATTLE",        "class_desc": "COWS, BEEF"},
     "Cattle, Milk Cows":  {"commodity_desc": "CATTLE",        "class_desc": "COWS, MILK"},
     "Hogs & Pigs":        {"commodity_desc": "HOGS"},
     "Sheep & Lambs":      {"commodity_desc": "SHEEP & LAMBS"},
+    # Poultry inventory / production — use _stat/_unit to override defaults
+    "Chickens, Layers":   {"commodity_desc": "CHICKENS", "class_desc": "LAYERS - INCL PULLETS"},
+    "Chickens, Broilers": {"commodity_desc": "CHICKENS", "class_desc": "BROILERS",
+                           "_stat": "PRODUCTION"},
+    "Eggs, Table":        {"commodity_desc": "EGGS",     "class_desc": "TABLE",
+                           "_stat": "PRODUCTION", "_unit": "DOZEN"},
+    "Turkeys":            {"commodity_desc": "TURKEYS"},
 }
 # Standard survey reference period per species for consistent year-over-year comparison
 _LIVESTOCK_PERIOD: dict = {
-    "Cattle, All":       "JAN 1",
-    "Cattle, Beef Cows": "JAN 1",
-    "Cattle, Milk Cows": "JAN 1",
-    "Hogs & Pigs":       "DEC 1",
-    "Sheep & Lambs":     "JAN 1",
+    "Cattle, All":        "JAN 1",
+    "Cattle, Beef Cows":  "JAN 1",
+    "Cattle, Milk Cows":  "JAN 1",
+    "Hogs & Pigs":        "DEC 1",
+    "Sheep & Lambs":      "JAN 1",
+    "Chickens, Layers":   "JAN 1",
+    "Chickens, Broilers": "YEAR",
+    "Eggs, Table":        "YEAR",
+    "Turkeys":            "DEC 1",
 }
+# Base display unit per species (used for auto-scaling labels)
+_LIVESTOCK_UNIT: dict = {
+    "Cattle, All":        "head",
+    "Cattle, Beef Cows":  "head",
+    "Cattle, Milk Cows":  "head",
+    "Hogs & Pigs":        "head",
+    "Sheep & Lambs":      "head",
+    "Chickens, Layers":   "head",
+    "Chickens, Broilers": "head",
+    "Eggs, Table":        "dz",
+    "Turkeys":            "head",
+}
+# Species where county-level data was discontinued by NASS starting 2024
+_LIVESTOCK_POULTRY: set = {"Chickens, Layers", "Chickens, Broilers", "Eggs, Table", "Turkeys"}
 _LIVESTOCK_YEARS: list = list(range(2025, 2011, -1))
 
 # FSA Conservation Reserve Program enrollment — million acres by state abbreviation (or "US")
@@ -1591,17 +1617,20 @@ def load_livestock(agg_level: str, species_key: str, year: int,
                    state_alpha: str = "",
                    cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
     """Fetch NASS livestock inventory at STATE, AG DISTRICT, or COUNTY level."""
+    _spec = dict(_LIVESTOCK_SPECIES[species_key])
+    _stat_cat  = _spec.pop("_stat", "INVENTORY")
+    _unit_desc = _spec.pop("_unit", "HEAD")
     params: dict = {
         "key":               NASS_API_KEY,
         "source_desc":       "SURVEY",
         "sector_desc":       "ANIMALS & PRODUCTS",
-        "statisticcat_desc": "INVENTORY",
-        "unit_desc":         "HEAD",
+        "statisticcat_desc": _stat_cat,
+        "unit_desc":         _unit_desc,
         "agg_level_desc":    agg_level,
         "year":              str(year),
         "format":            "JSON",
     }
-    params.update(_LIVESTOCK_SPECIES[species_key])
+    params.update(_spec)
     if state_alpha:
         params["state_alpha"] = state_alpha
     try:
@@ -1628,18 +1657,21 @@ def load_livestock_hist(species_key: str,
                         cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
     """Fetch all-years STATE-level livestock inventory (2000-present) in one call."""
     period = _LIVESTOCK_PERIOD.get(species_key, "JAN 1")
+    _spec = dict(_LIVESTOCK_SPECIES[species_key])
+    _stat_cat  = _spec.pop("_stat", "INVENTORY")
+    _unit_desc = _spec.pop("_unit", "HEAD")
     params: dict = {
         "key":                   NASS_API_KEY,
         "source_desc":           "SURVEY",
         "sector_desc":           "ANIMALS & PRODUCTS",
-        "statisticcat_desc":     "INVENTORY",
-        "unit_desc":             "HEAD",
+        "statisticcat_desc":     _stat_cat,
+        "unit_desc":             _unit_desc,
         "agg_level_desc":        "STATE",
         "reference_period_desc": period,
         "year__GE":              "2000",
         "format":                "JSON",
     }
-    params.update(_LIVESTOCK_SPECIES[species_key])
+    params.update(_spec)
     try:
         url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
         with urllib.request.urlopen(url, timeout=30) as r:
@@ -2929,6 +2961,14 @@ def _auto_ac(mx: float) -> tuple:
     if mx >= 500e3: return 1e6, "M ac"
     if mx >= 1e3:   return 1e3, "K ac"
     return 1, "ac"
+
+
+def _lv_auto_scale(mx: float, base_unit: str) -> tuple:
+    """Return (divisor, label) to scale livestock quantities to a readable unit."""
+    if mx >= 500e6: return 1e9,     f"B {base_unit}"
+    if mx >= 500e3: return 1e6,     f"M {base_unit}"
+    if mx >= 500:   return 1e3,     f"K {base_unit}"
+    return 1, base_unit
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -4959,6 +4999,7 @@ def main():
                             else f"{x} — {ABBR_TO_NAME.get(x, '')}",
             )
         _lv_state_abbr = None if _lv_state_sel.startswith("—") else _lv_state_sel
+        _lv_base_unit  = _LIVESTOCK_UNIT.get(_lv_species, "head")
 
         # ── National / state-level choropleth ─────────────────────────────────
         with st.spinner(f"Loading {_lv_species} state inventory..."):
@@ -4980,12 +5021,7 @@ def main():
             _lv_st_agg["StateName"] = _lv_st_agg["State"].map(ABBR_TO_NAME)
             _lv_st_agg = _lv_st_agg.dropna(subset=["StateName"])
             _lv_smx = _lv_st_agg["Value"].max()
-            if _lv_smx >= 500_000:
-                _lv_sdiv, _lv_sunit = 1_000_000, "M head"
-            elif _lv_smx >= 500:
-                _lv_sdiv, _lv_sunit = 1_000, "K head"
-            else:
-                _lv_sdiv, _lv_sunit = 1, "head"
+            _lv_sdiv, _lv_sunit = _lv_auto_scale(_lv_smx, _lv_base_unit)
             _lv_st_agg["Display"] = _lv_st_agg["Value"] / _lv_sdiv
 
             _lv_us_fig = px.choropleth(
@@ -5029,6 +5065,13 @@ def main():
 
             if _lv_drill == "County":
                 # ── County choropleth ────────────────────────────────────────
+                if _lv_species in _LIVESTOCK_POULTRY:
+                    st.info(
+                        "NASS discontinued annual county-level poultry estimates "
+                        "starting with the 2024 production year. County data for "
+                        "earlier years may appear below; the Census of Agriculture "
+                        "(2017, 2022) remains the most complete county-level source."
+                    )
                 with st.spinner("Loading county data..."):
                     _lv_co_df = load_livestock(
                         "COUNTY", _lv_species, _lv_year,
@@ -5060,12 +5103,7 @@ def main():
                                 "No county detail available for this selection.")
                     else:
                         _lv_comx = _lv_co_agg["Value"].max()
-                        if _lv_comx >= 500_000:
-                            _lv_cdiv, _lv_cunit = 1_000_000, "M head"
-                        elif _lv_comx >= 500:
-                            _lv_cdiv, _lv_cunit = 1_000, "K head"
-                        else:
-                            _lv_cdiv, _lv_cunit = 1, "head"
+                        _lv_cdiv, _lv_cunit = _lv_auto_scale(_lv_comx, _lv_base_unit)
                         _lv_co_agg["Display"] = _lv_co_agg["Value"] / _lv_cdiv
 
                         _lv_sfips = STATE_FIPS_ALL.get(_lv_state_abbr, "")
@@ -5158,12 +5196,7 @@ def main():
                         .sort_values("Value", ascending=False)
                     )
                     _lv_asdmx = _lv_asd_agg["Value"].max()
-                    if _lv_asdmx >= 500_000:
-                        _lv_adiv, _lv_aunit = 1_000_000, "M head"
-                    elif _lv_asdmx >= 500:
-                        _lv_adiv, _lv_aunit = 1_000, "K head"
-                    else:
-                        _lv_adiv, _lv_aunit = 1, "head"
+                    _lv_adiv, _lv_aunit = _lv_auto_scale(_lv_asdmx, _lv_base_unit)
                     _lv_asd_agg["Display"] = _lv_asd_agg["Value"] / _lv_adiv
 
                     # ASD choropleth — reuse the district GDF builder
@@ -5288,12 +5321,7 @@ def main():
 
             # Auto-scale
             _lv_tmx = _lv_trend_df["Value"].max()
-            if _lv_tmx >= 500_000:
-                _lv_tdiv, _lv_tunit = 1_000_000, "M head"
-            elif _lv_tmx >= 500:
-                _lv_tdiv, _lv_tunit = 1_000, "K head"
-            else:
-                _lv_tdiv, _lv_tunit = 1, "head"
+            _lv_tdiv, _lv_tunit = _lv_auto_scale(_lv_tmx, _lv_base_unit)
             _lv_trend_df["Display"] = _lv_trend_df["Value"] / _lv_tdiv
 
             _lv_labels = _lv_trend_df["Label"].unique().tolist()
