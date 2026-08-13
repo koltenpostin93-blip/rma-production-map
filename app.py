@@ -127,6 +127,15 @@ _ACR_PARAMS: dict = {
 # crops that produce prevent-plant data through NASS
 _ACR_PP_CROPS = ("Corn","Soybeans","Wheat","Cotton","Sorghum","Rice","Peanuts","SugarBeets","DryBeans","Barley","Oats","Sunflowers","Canola")
 
+_LIVESTOCK_SPECIES: dict = {
+    "Cattle, All":        {"commodity_desc": "CATTLE",        "class_desc": "INCL CALVES"},
+    "Cattle, Beef Cows":  {"commodity_desc": "CATTLE",        "class_desc": "COWS, BEEF"},
+    "Cattle, Milk Cows":  {"commodity_desc": "CATTLE",        "class_desc": "COWS, MILK"},
+    "Hogs & Pigs":        {"commodity_desc": "HOGS"},
+    "Sheep & Lambs":      {"commodity_desc": "SHEEP & LAMBS"},
+}
+_LIVESTOCK_YEARS: list = list(range(2025, 2011, -1))
+
 # FSA Conservation Reserve Program enrollment — million acres by state abbreviation (or "US")
 # Source: USDA FSA CRPHistoryState86-25.xlsx (fiscal year = planting calendar year)
 _CRP_DATA: dict = {
@@ -1569,6 +1578,43 @@ def load_acreage_crop_hist(
     return out
 
 
+@st.cache_data(show_spinner=False)
+def load_livestock(agg_level: str, species_key: str, year: int,
+                   state_alpha: str = "",
+                   cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
+    """Fetch NASS livestock inventory at STATE, AG DISTRICT, or COUNTY level."""
+    params: dict = {
+        "key":               NASS_API_KEY,
+        "source_desc":       "SURVEY",
+        "sector_desc":       "ANIMALS & PRODUCTS",
+        "statisticcat_desc": "INVENTORY",
+        "unit_desc":         "HEAD",
+        "agg_level_desc":    agg_level,
+        "year":              str(year),
+        "format":            "JSON",
+    }
+    params.update(_LIVESTOCK_SPECIES[species_key])
+    if state_alpha:
+        params["state_alpha"] = state_alpha
+    try:
+        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=25) as r:
+            data = json.loads(r.read())
+        rows = data.get("data", [])
+    except Exception:
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "Value" not in df.columns:
+        return pd.DataFrame()
+    df["Value"] = pd.to_numeric(
+        df["Value"].astype(str).str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+    return df.dropna(subset=["Value"])
+
+
 def _render_acreage_html(rows: list, years: list,
                           title: str, scope_label: str,
                           unit_mul: float = 1.0,
@@ -2931,9 +2977,9 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_about = st.tabs([
+    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_livestock, tab_about = st.tabs([
         "🌾  NASS Production", "📋  RMA",
-        "📦  Grain Stocks", "🌱  Acreage Summary", "📖  About the Data",
+        "📦  Grain Stocks", "🌱  Acreage Summary", "🐄  Livestock", "📖  About the Data",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -4846,6 +4892,339 @@ def main():
                 ),
             )
             st.plotly_chart(_cfig, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # LIVESTOCK INVENTORY TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_livestock:
+        st.markdown(
+            f"<p style='font-size:0.8rem;color:{MUTED};margin:0 0 10px 0;'>"
+            "USDA NASS QuickStats — annual livestock inventory surveys. "
+            "County and ASD coverage varies by species and year; NASS withholds "
+            "data when disclosure thresholds apply.</p>",
+            unsafe_allow_html=True,
+        )
+        # ── Controls ──────────────────────────────────────────────────────────
+        _lv_c1, _lv_c2, _lv_c3, _lv_c4 = st.columns([2.2, 1.2, 1.5, 2.1])
+        with _lv_c1:
+            _lv_species = st.selectbox(
+                "Species", list(_LIVESTOCK_SPECIES.keys()), key="lv_species"
+            )
+        with _lv_c2:
+            _lv_year = st.selectbox("Year", _LIVESTOCK_YEARS, key="lv_year")
+        with _lv_c3:
+            _lv_drill = st.selectbox(
+                "Drill-down level", ["County", "ASD District"], key="lv_drill"
+            )
+        with _lv_c4:
+            _lv_state_sel = st.selectbox(
+                "State",
+                ["— National —"] + sorted(ABBR_TO_NAME.keys()),
+                key="lv_state",
+                format_func=lambda x: x if x.startswith("—")
+                            else f"{x} — {ABBR_TO_NAME.get(x, '')}",
+            )
+        _lv_state_abbr = None if _lv_state_sel.startswith("—") else _lv_state_sel
+
+        # ── National / state-level choropleth ─────────────────────────────────
+        with st.spinner(f"Loading {_lv_species} state inventory..."):
+            _lv_st_df = load_livestock(
+                "STATE", _lv_species, _lv_year, cache_ver=_CACHE_VERSION
+            )
+
+        if _lv_st_df.empty:
+            st.warning(
+                f"No {_lv_species} inventory returned for {_lv_year}. "
+                "Try an earlier year."
+            )
+        else:
+            _lv_st_agg = (
+                _lv_st_df
+                .groupby("state_alpha", as_index=False)["Value"].sum()
+                .rename(columns={"state_alpha": "State"})
+            )
+            _lv_st_agg["StateName"] = _lv_st_agg["State"].map(ABBR_TO_NAME)
+            _lv_st_agg = _lv_st_agg.dropna(subset=["StateName"])
+            _lv_smx = _lv_st_agg["Value"].max()
+            if _lv_smx >= 500_000:
+                _lv_sdiv, _lv_sunit = 1_000_000, "M head"
+            elif _lv_smx >= 500:
+                _lv_sdiv, _lv_sunit = 1_000, "K head"
+            else:
+                _lv_sdiv, _lv_sunit = 1, "head"
+            _lv_st_agg["Display"] = _lv_st_agg["Value"] / _lv_sdiv
+
+            _lv_us_fig = px.choropleth(
+                _lv_st_agg,
+                locations="State", locationmode="USA-states",
+                color="Display", scope="usa",
+                color_continuous_scale="YlOrRd",
+                hover_name="StateName",
+                hover_data={"Display": ":.2f", "State": False},
+                labels={"Display": f"{_lv_species} ({_lv_sunit})"},
+            )
+            _lv_us_fig.update_layout(
+                height=400,
+                margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor=PANEL,
+                geo=dict(
+                    bgcolor=PANEL, lakecolor="#1a4060",
+                    showlakes=True, showframe=False,
+                ),
+                coloraxis_colorbar=dict(
+                    title=dict(text=_lv_sunit, font=dict(size=11, color=TEXT)),
+                    thickness=12, len=0.6,
+                    tickfont=dict(size=10, color=TEXT),
+                ),
+            )
+            _lv_us_fig.update_traces(
+                marker_line_color="#3a4a5a", marker_line_width=0.5
+            )
+            st.plotly_chart(_lv_us_fig, use_container_width=True, key="lv_us_map")
+
+        # ── State drill-down ──────────────────────────────────────────────────
+        if _lv_state_abbr:
+            _lv_state_name = ABBR_TO_NAME.get(_lv_state_abbr, _lv_state_abbr)
+            _lv_detail_lbl = "County" if _lv_drill == "County" else "ASD District"
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin:16px 0 4px 0;"
+                f"font-size:1rem;font-weight:600;'>"
+                f"{_lv_species} — {_lv_state_name} {_lv_detail_lbl} Detail</h4>",
+                unsafe_allow_html=True,
+            )
+
+            if _lv_drill == "County":
+                # ── County choropleth ────────────────────────────────────────
+                with st.spinner("Loading county data..."):
+                    _lv_co_df = load_livestock(
+                        "COUNTY", _lv_species, _lv_year,
+                        state_alpha=_lv_state_abbr, cache_ver=_CACHE_VERSION
+                    )
+                if _lv_co_df.empty:
+                    st.info(
+                        f"No county-level data for {_lv_species} in "
+                        f"{_lv_state_abbr} ({_lv_year}). NASS may have withheld "
+                        "values due to disclosure rules, or this species/year "
+                        "combination was not surveyed at the county level."
+                    )
+                else:
+                    _lv_co_df["fips"] = (
+                        _lv_co_df["state_fips_code"].astype(str).str.zfill(2)
+                        + _lv_co_df["county_ansi"].astype(str).str.zfill(3)
+                    )
+                    _lv_co_agg = (
+                        _lv_co_df.dropna(subset=["county_name"])
+                        .groupby(["fips", "county_name"], as_index=False)["Value"].sum()
+                        .rename(columns={"county_name": "County"})
+                    )
+                    # Drop state-level aggregate rows (county_ansi 998/999)
+                    _lv_co_agg = _lv_co_agg[
+                        ~_lv_co_agg["fips"].str[-3:].isin(["998", "999"])
+                    ]
+                    if _lv_co_agg.empty:
+                        st.info("Returned rows are state-level aggregates only. "
+                                "No county detail available for this selection.")
+                    else:
+                        _lv_comx = _lv_co_agg["Value"].max()
+                        if _lv_comx >= 500_000:
+                            _lv_cdiv, _lv_cunit = 1_000_000, "M head"
+                        elif _lv_comx >= 500:
+                            _lv_cdiv, _lv_cunit = 1_000, "K head"
+                        else:
+                            _lv_cdiv, _lv_cunit = 1, "head"
+                        _lv_co_agg["Display"] = _lv_co_agg["Value"] / _lv_cdiv
+
+                        _lv_sfips = STATE_FIPS_ALL.get(_lv_state_abbr, "")
+                        _lv_st_feats = [
+                            f for f in geo["features"]
+                            if f["properties"]["STATE"] == _lv_sfips
+                        ]
+                        _lv_all_fips = [
+                            f["properties"]["STATE"] + f["properties"]["COUNTY"]
+                            for f in _lv_st_feats
+                        ]
+                        _lv_st_geo = {
+                            "type": "FeatureCollection", "features": _lv_st_feats
+                        }
+                        _lv_co_line = dict(color=BORDER, width=0.4)
+                        _lv_cz = _lv_co_agg["Display"].tolist()
+
+                        _lv_co_fig = go.Figure()
+                        _lv_co_fig.add_trace(go.Choropleth(
+                            geojson=_lv_st_geo, featureidkey="id",
+                            locations=_lv_all_fips,
+                            z=[0] * len(_lv_all_fips),
+                            colorscale=[[0, PANEL], [1, PANEL]],
+                            showscale=False,
+                            marker=dict(line=_lv_co_line),
+                            hoverinfo="skip",
+                        ))
+                        _lv_co_fig.add_trace(go.Choropleth(
+                            geojson=_lv_st_geo, featureidkey="id",
+                            locations=_lv_co_agg["fips"].tolist(),
+                            z=_lv_cz,
+                            colorscale="YlOrRd",
+                            zmin=0, zmax=max(_lv_cz) if _lv_cz else 1,
+                            colorbar=dict(
+                                title=dict(text=_lv_cunit,
+                                           font=dict(size=11, color=TEXT)),
+                                thickness=12, len=0.6,
+                                tickfont=dict(size=10, color=TEXT),
+                            ),
+                            marker=dict(line=_lv_co_line),
+                            text=_lv_co_agg["County"].str.title().tolist(),
+                            hovertemplate=(
+                                "<b>%{text} County</b><br>"
+                                "%{z:,.1f} " + _lv_cunit + "<extra></extra>"
+                            ),
+                        ))
+                        _lv_co_fig.update_layout(
+                            height=460,
+                            margin=dict(l=0, r=0, t=10, b=0),
+                            paper_bgcolor=PANEL,
+                            geo=dict(
+                                bgcolor=PANEL, showframe=False,
+                                fitbounds="locations", resolution=50,
+                            ),
+                        )
+                        st.plotly_chart(_lv_co_fig, use_container_width=True,
+                                        key="lv_co_map")
+
+                        # Ranked table
+                        _lv_co_tbl = (
+                            _lv_co_agg.sort_values("Value", ascending=False)
+                            [["County", "Display"]].copy()
+                            .rename(columns={"Display": f"Inventory ({_lv_cunit})"})
+                        )
+                        _lv_co_tbl["County"] = _lv_co_tbl["County"].str.title()
+                        _lv_co_tbl[f"Inventory ({_lv_cunit})"] = (
+                            _lv_co_tbl[f"Inventory ({_lv_cunit})"]
+                            .map(lambda x: f"{x:,.1f}")
+                        )
+                        st.dataframe(_lv_co_tbl, hide_index=True,
+                                     use_container_width=True)
+
+            else:  # ASD District
+                # ── ASD choropleth + bar chart ────────────────────────────────
+                with st.spinner("Loading ASD data..."):
+                    _lv_asd_df = load_livestock(
+                        "AG DISTRICT", _lv_species, _lv_year,
+                        state_alpha=_lv_state_abbr, cache_ver=_CACHE_VERSION
+                    )
+                if _lv_asd_df.empty or "asd_desc" not in _lv_asd_df.columns:
+                    st.info(
+                        f"No ASD-level data for {_lv_species} in "
+                        f"{_lv_state_abbr} ({_lv_year})."
+                    )
+                else:
+                    _lv_asd_agg = (
+                        _lv_asd_df.dropna(subset=["asd_desc"])
+                        .groupby("asd_desc", as_index=False)["Value"].sum()
+                        .rename(columns={"asd_desc": "District"})
+                        .sort_values("Value", ascending=False)
+                    )
+                    _lv_asdmx = _lv_asd_agg["Value"].max()
+                    if _lv_asdmx >= 500_000:
+                        _lv_adiv, _lv_aunit = 1_000_000, "M head"
+                    elif _lv_asdmx >= 500:
+                        _lv_adiv, _lv_aunit = 1_000, "K head"
+                    else:
+                        _lv_adiv, _lv_aunit = 1, "head"
+                    _lv_asd_agg["Display"] = _lv_asd_agg["Value"] / _lv_adiv
+
+                    # ASD choropleth — reuse the district GDF builder
+                    _lv_sfips = STATE_FIPS_ALL.get(_lv_state_abbr, "")
+                    try:
+                        _lv_fmap = load_boundary_fips_map(
+                            "Corn", _lv_sfips, _CACHE_VERSION, geo
+                        )
+                        _lv_dgdf = build_nass_district_gdf(
+                            _lv_sfips, _CACHE_VERSION, _lv_fmap, geo
+                        )
+                    except Exception:
+                        _lv_dgdf = gpd.GeoDataFrame()
+
+                    if not _lv_dgdf.empty:
+                        _lv_djson = json.loads(_lv_dgdf.to_json())
+                        # Match on uppercase — NASS returns uppercase, GDF is Title
+                        _lv_dval = {
+                            row["District"].upper(): row["Display"]
+                            for _, row in _lv_asd_agg.iterrows()
+                        }
+                        _lv_ddists = _lv_dgdf["District"].tolist()
+                        _lv_dz = [_lv_dval.get(d.upper(), 0) for d in _lv_ddists]
+                        _lv_dhov = [
+                            (f"<b>{d}</b><br>"
+                             f"{_lv_dval[d.upper()]:,.1f} {_lv_aunit}")
+                            if d.upper() in _lv_dval
+                            else f"<b>{d}</b><br>—"
+                            for d in _lv_ddists
+                        ]
+                        _lv_asd_fig = go.Figure()
+                        _lv_asd_fig.add_trace(go.Choropleth(
+                            geojson=_lv_djson,
+                            featureidkey="properties.District",
+                            locations=_lv_ddists, z=_lv_dz,
+                            colorscale="YlOrRd",
+                            zmin=0, zmax=max(_lv_dz) if _lv_dz else 1,
+                            colorbar=dict(
+                                title=dict(text=_lv_aunit,
+                                           font=dict(size=11, color=TEXT)),
+                                thickness=12, len=0.6,
+                                tickfont=dict(size=10, color=TEXT),
+                            ),
+                            marker=dict(line=dict(color=BORDER, width=0.6)),
+                            text=_lv_dhov,
+                            hovertemplate="%{text}<extra></extra>",
+                        ))
+                        _lv_asd_fig.update_layout(
+                            height=420,
+                            margin=dict(l=0, r=0, t=10, b=0),
+                            paper_bgcolor=PANEL,
+                            geo=dict(
+                                bgcolor=PANEL, showframe=False,
+                                fitbounds="locations", resolution=50,
+                            ),
+                        )
+                        st.plotly_chart(_lv_asd_fig, use_container_width=True,
+                                        key="lv_asd_map")
+
+                    # ASD bar chart (always shown)
+                    _lv_bar_df = _lv_asd_agg.sort_values("Value", ascending=True)
+                    _lv_bar_fig = px.bar(
+                        _lv_bar_df, x="Display", y="District",
+                        orientation="h",
+                        color="Display",
+                        color_continuous_scale="YlOrRd",
+                        labels={"Display": f"Inventory ({_lv_aunit})",
+                                "District": ""},
+                    )
+                    _lv_bar_fig.update_layout(
+                        height=max(220, len(_lv_asd_agg) * 38),
+                        margin=dict(l=0, r=0, t=0, b=0),
+                        paper_bgcolor=PANEL, plot_bgcolor=PANEL,
+                        coloraxis_showscale=False,
+                        showlegend=False,
+                        yaxis=dict(tickfont=dict(size=11, color=TEXT)),
+                        xaxis=dict(
+                            tickfont=dict(size=10, color=TEXT),
+                            title_font=dict(size=11, color=TEXT),
+                        ),
+                    )
+                    _lv_bar_fig.update_traces(
+                        hovertemplate="%{y}: %{x:,.1f} " + _lv_aunit
+                                      + "<extra></extra>"
+                    )
+                    st.plotly_chart(_lv_bar_fig, use_container_width=True,
+                                    key="lv_asd_bar")
+
+        st.markdown(
+            f"<p style='font-size:0.7rem;color:{MUTED};margin-top:12px;'>"
+            "Source: USDA NASS QuickStats — Animals &amp; Products, Inventory, HEAD. "
+            "January 1 survey reference date for cattle/sheep; quarterly for hogs. "
+            "County data withheld by NASS where fewer than 3 operations would be identified.</p>",
+            unsafe_allow_html=True,
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     # ABOUT THE DATA TAB
