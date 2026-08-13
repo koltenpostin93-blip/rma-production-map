@@ -134,6 +134,9 @@ _LIVESTOCK_SPECIES: dict = {
     "Cattle, Milk Cows":  {"commodity_desc": "CATTLE",        "class_desc": "COWS, MILK"},
     "Hogs & Pigs":        {"commodity_desc": "HOGS"},
     "Sheep & Lambs":      {"commodity_desc": "SHEEP & LAMBS"},
+    # Dairy production
+    "Milk Production":    {"commodity_desc": "MILK",
+                           "_stat": "PRODUCTION", "_unit": "LB"},
     # Poultry inventory / production — use _stat/_unit to override defaults
     "Chickens, Layers":   {"commodity_desc": "CHICKENS", "class_desc": "LAYERS - INCL PULLETS"},
     "Chickens, Broilers": {"commodity_desc": "CHICKENS", "class_desc": "BROILERS",
@@ -149,6 +152,7 @@ _LIVESTOCK_PERIOD: dict = {
     "Cattle, Milk Cows":  "JAN 1",
     "Hogs & Pigs":        "DEC 1",
     "Sheep & Lambs":      "JAN 1",
+    "Milk Production":    "YEAR",
     "Chickens, Layers":   "JAN 1",
     "Chickens, Broilers": "YEAR",
     "Eggs, Table":        "YEAR",
@@ -161,13 +165,17 @@ _LIVESTOCK_UNIT: dict = {
     "Cattle, Milk Cows":  "head",
     "Hogs & Pigs":        "head",
     "Sheep & Lambs":      "head",
+    "Milk Production":    "lb",
     "Chickens, Layers":   "head",
     "Chickens, Broilers": "head",
     "Eggs, Table":        "dz",
     "Turkeys":            "head",
 }
-# Species where county-level data was discontinued by NASS starting 2024
-_LIVESTOCK_POULTRY: set = {"Chickens, Layers", "Chickens, Broilers", "Eggs, Table", "Turkeys"}
+# Species where county-level data is unavailable or very sparse
+_LIVESTOCK_POULTRY: set = {
+    "Milk Production",
+    "Chickens, Layers", "Chickens, Broilers", "Eggs, Table", "Turkeys",
+}
 _LIVESTOCK_YEARS: list = list(range(2025, 2011, -1))
 
 # FSA Conservation Reserve Program enrollment — million acres by state abbreviation (or "US")
@@ -5106,10 +5114,12 @@ def main():
                 # ── County choropleth ────────────────────────────────────────
                 if _lv_species in _LIVESTOCK_POULTRY:
                     st.info(
-                        "NASS discontinued annual county-level poultry estimates "
-                        "starting with the 2024 production year. County data for "
-                        "earlier years may appear below; the Census of Agriculture "
-                        "(2017, 2022) remains the most complete county-level source."
+                        "County-level data for this series is limited or unavailable. "
+                        "NASS discontinued annual county poultry estimates starting 2024; "
+                        "milk production is published at state level only. "
+                        "Historical county data may appear below where NASS has it; "
+                        "the Census of Agriculture (2017, 2022) is the most complete "
+                        "county-level source."
                     )
                 with st.spinner("Loading county data..."):
                     _lv_co_df = load_livestock(
