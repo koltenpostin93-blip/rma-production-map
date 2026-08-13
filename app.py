@@ -1692,6 +1692,45 @@ def load_livestock_hist(species_key: str,
     return df.dropna(subset=["Value", "year"])
 
 
+@st.cache_data(show_spinner=False)
+def load_livestock_county_hist(species_key: str, state_alpha: str,
+                               cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
+    """Fetch all-years county-level livestock data for one state (2000-present)."""
+    _spec = dict(_LIVESTOCK_SPECIES[species_key])
+    _stat_cat  = _spec.pop("_stat", "INVENTORY")
+    _unit_desc = _spec.pop("_unit", "HEAD")
+    params: dict = {
+        "key":               NASS_API_KEY,
+        "source_desc":       "SURVEY",
+        "sector_desc":       "ANIMALS & PRODUCTS",
+        "statisticcat_desc": _stat_cat,
+        "unit_desc":         _unit_desc,
+        "agg_level_desc":    "COUNTY",
+        "state_alpha":       state_alpha,
+        "year__GE":          "2000",
+        "format":            "JSON",
+    }
+    params.update(_spec)
+    try:
+        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=30) as r:
+            data = json.loads(r.read())
+        rows = data.get("data", [])
+    except Exception:
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "Value" not in df.columns:
+        return pd.DataFrame()
+    df["Value"] = pd.to_numeric(
+        df["Value"].astype(str).str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+    df["year"] = pd.to_numeric(df.get("year", pd.Series(dtype=float)), errors="coerce")
+    return df.dropna(subset=["Value", "year"])
+
+
 def _render_acreage_html(rows: list, years: list,
                           title: str, scope_label: str,
                           unit_mul: float = 1.0,
@@ -5175,6 +5214,108 @@ def main():
                         )
                         st.dataframe(_lv_co_tbl, hide_index=True,
                                      use_container_width=True)
+
+                # ── County historical trend ───────────────────────────────
+                st.markdown(
+                    f"<h5 style='color:{ACCENT};margin:20px 0 4px 0;"
+                    "font-size:0.9rem;font-weight:600;'>"
+                    "County Historical Trend</h5>",
+                    unsafe_allow_html=True,
+                )
+                with st.spinner("Loading county history..."):
+                    _lv_co_hist = load_livestock_county_hist(
+                        _lv_species, _lv_state_abbr, cache_ver=_CACHE_VERSION
+                    )
+                if _lv_co_hist.empty or "county_name" not in _lv_co_hist.columns:
+                    st.info("No multi-year county history available for this selection.")
+                else:
+                    _lv_ch = _lv_co_hist.copy()
+                    _lv_ch["fips"] = (
+                        _lv_ch["state_fips_code"].astype(str).str.zfill(2)
+                        + _lv_ch["county_ansi"].astype(str).str.zfill(3)
+                    )
+                    _lv_ch = _lv_ch[~_lv_ch["fips"].str[-3:].isin(["998", "999"])]
+                    _lv_ch = _lv_ch.dropna(subset=["county_name"])
+                    _lv_ch_agg = (
+                        _lv_ch.groupby(["year", "county_name"], as_index=False)["Value"].sum()
+                    )
+                    _lv_ch_agg["county_name"] = _lv_ch_agg["county_name"].str.title()
+                    _lv_ch_agg["year"] = _lv_ch_agg["year"].astype(int)
+
+                    _lv_counties = sorted(_lv_ch_agg["county_name"].unique().tolist())
+                    # Default to the top county from the current-year snapshot
+                    _lv_def_co = _lv_counties[0] if _lv_counties else None
+                    if not _lv_co_agg.empty:
+                        _top_co = (
+                            _lv_co_agg.sort_values("Value", ascending=False)
+                            ["County"].str.title().iloc[0]
+                        )
+                        if _top_co in _lv_counties:
+                            _lv_def_co = _top_co
+
+                    _lv_sel_co = st.selectbox(
+                        "Select county",
+                        _lv_counties,
+                        index=_lv_counties.index(_lv_def_co) if _lv_def_co in _lv_counties else 0,
+                        key="lv_county_hist_sel",
+                    )
+
+                    _lv_co_ts = (
+                        _lv_ch_agg[_lv_ch_agg["county_name"] == _lv_sel_co]
+                        .sort_values("year")
+                    )
+                    if not _lv_co_ts.empty:
+                        _lv_ch_div, _lv_ch_unit = _lv_auto_scale(
+                            _lv_co_ts["Value"].max(), _lv_base_unit
+                        )
+                        _lv_co_ts = _lv_co_ts.copy()
+                        _lv_co_ts["Display"] = _lv_co_ts["Value"] / _lv_ch_div
+
+                        _lv_ch_fig = go.Figure()
+                        _lv_ch_fig.add_trace(go.Scatter(
+                            x=_lv_co_ts["year"],
+                            y=_lv_co_ts["Display"],
+                            mode="lines+markers",
+                            name=_lv_sel_co,
+                            line=dict(color=ACCENT, width=2),
+                            marker=dict(size=6),
+                            hovertemplate=(
+                                f"<b>{_lv_sel_co}</b><br>"
+                                "%{x}: %{y:,.1f} " + _lv_ch_unit + "<extra></extra>"
+                            ),
+                        ))
+                        _lv_ch_fig.update_layout(
+                            height=280,
+                            margin=dict(l=0, r=10, t=10, b=0),
+                            paper_bgcolor=PANEL, plot_bgcolor=PANEL,
+                            showlegend=False,
+                            xaxis=dict(
+                                title="Year",
+                                title_font=dict(size=11, color=MUTED),
+                                tickfont=dict(size=10, color=TEXT),
+                                gridcolor=BORDER, dtick=2,
+                            ),
+                            yaxis=dict(
+                                title=f"Inventory ({_lv_ch_unit})",
+                                title_font=dict(size=11, color=MUTED),
+                                tickfont=dict(size=10, color=TEXT),
+                                gridcolor=BORDER, zeroline=False,
+                            ),
+                        )
+                        st.plotly_chart(_lv_ch_fig, use_container_width=True,
+                                        key="lv_county_hist_chart")
+
+                        _lv_ch_tbl = _lv_co_ts[["year", "Display"]].copy()
+                        _lv_ch_tbl.columns = ["Year", f"Inventory ({_lv_ch_unit})"]
+                        _lv_ch_tbl["Year"] = _lv_ch_tbl["Year"].astype(str)
+                        _lv_ch_tbl[f"Inventory ({_lv_ch_unit})"] = (
+                            _lv_ch_tbl[f"Inventory ({_lv_ch_unit})"]
+                            .map(lambda x: f"{x:,.1f}")
+                        )
+                        st.dataframe(
+                            _lv_ch_tbl.sort_values("Year", ascending=False),
+                            hide_index=True, use_container_width=True,
+                        )
 
             else:  # ASD District
                 # ── ASD choropleth + bar chart ────────────────────────────────
