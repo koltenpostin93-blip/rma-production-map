@@ -134,6 +134,14 @@ _LIVESTOCK_SPECIES: dict = {
     "Hogs & Pigs":        {"commodity_desc": "HOGS"},
     "Sheep & Lambs":      {"commodity_desc": "SHEEP & LAMBS"},
 }
+# Standard survey reference period per species for consistent year-over-year comparison
+_LIVESTOCK_PERIOD: dict = {
+    "Cattle, All":       "JAN 1",
+    "Cattle, Beef Cows": "JAN 1",
+    "Cattle, Milk Cows": "JAN 1",
+    "Hogs & Pigs":       "DEC 1",
+    "Sheep & Lambs":     "JAN 1",
+}
 _LIVESTOCK_YEARS: list = list(range(2025, 2011, -1))
 
 # FSA Conservation Reserve Program enrollment — million acres by state abbreviation (or "US")
@@ -1613,6 +1621,43 @@ def load_livestock(agg_level: str, species_key: str, year: int,
         errors="coerce",
     )
     return df.dropna(subset=["Value"])
+
+
+@st.cache_data(show_spinner=False)
+def load_livestock_hist(species_key: str,
+                        cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
+    """Fetch all-years STATE-level livestock inventory (2000-present) in one call."""
+    period = _LIVESTOCK_PERIOD.get(species_key, "JAN 1")
+    params: dict = {
+        "key":                   NASS_API_KEY,
+        "source_desc":           "SURVEY",
+        "sector_desc":           "ANIMALS & PRODUCTS",
+        "statisticcat_desc":     "INVENTORY",
+        "unit_desc":             "HEAD",
+        "agg_level_desc":        "STATE",
+        "reference_period_desc": period,
+        "year__GE":              "2000",
+        "format":                "JSON",
+    }
+    params.update(_LIVESTOCK_SPECIES[species_key])
+    try:
+        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=30) as r:
+            data = json.loads(r.read())
+        rows = data.get("data", [])
+    except Exception:
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "Value" not in df.columns:
+        return pd.DataFrame()
+    df["Value"] = pd.to_numeric(
+        df["Value"].astype(str).str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+    df["year"] = pd.to_numeric(df.get("year", pd.Series(dtype=float)), errors="coerce")
+    return df.dropna(subset=["Value", "year"])
 
 
 def _render_acreage_html(rows: list, years: list,
@@ -5217,6 +5262,112 @@ def main():
                     )
                     st.plotly_chart(_lv_bar_fig, use_container_width=True,
                                     key="lv_asd_bar")
+
+        # ── Historical trend chart ────────────────────────────────────────────
+        st.markdown(
+            f"<h4 style='color:{ACCENT};margin:24px 0 4px 0;"
+            f"font-size:1rem;font-weight:600;'>"
+            f"Historical Inventory Trend — {_lv_species}</h4>",
+            unsafe_allow_html=True,
+        )
+        with st.spinner("Loading historical data..."):
+            _lv_hist_df = load_livestock_hist(_lv_species, cache_ver=_CACHE_VERSION)
+
+        if _lv_hist_df.empty:
+            st.info("Historical trend data not available for this species.")
+        else:
+            # National total per year (sum of all state rows returned)
+            _lv_nat = (
+                _lv_hist_df
+                .groupby("year", as_index=False)["Value"].sum()
+                .assign(Label="US National")
+            )
+            _lv_trend_parts = [_lv_nat]
+
+            # State line if a state is selected
+            if _lv_state_abbr and "state_alpha" in _lv_hist_df.columns:
+                _lv_st_hist = (
+                    _lv_hist_df[_lv_hist_df["state_alpha"] == _lv_state_abbr]
+                    .groupby("year", as_index=False)["Value"].sum()
+                    .assign(Label=ABBR_TO_NAME.get(_lv_state_abbr, _lv_state_abbr))
+                )
+                if not _lv_st_hist.empty:
+                    _lv_trend_parts.append(_lv_st_hist)
+
+            _lv_trend_df = pd.concat(_lv_trend_parts, ignore_index=True)
+            _lv_trend_df["year"] = _lv_trend_df["year"].astype(int)
+
+            # Auto-scale
+            _lv_tmx = _lv_trend_df["Value"].max()
+            if _lv_tmx >= 500_000:
+                _lv_tdiv, _lv_tunit = 1_000_000, "M head"
+            elif _lv_tmx >= 500:
+                _lv_tdiv, _lv_tunit = 1_000, "K head"
+            else:
+                _lv_tdiv, _lv_tunit = 1, "head"
+            _lv_trend_df["Display"] = _lv_trend_df["Value"] / _lv_tdiv
+
+            _lv_labels = _lv_trend_df["Label"].unique().tolist()
+            _lv_colors = {
+                "US National": MUTED,
+                **{
+                    lbl: ACCENT
+                    for lbl in _lv_labels if lbl != "US National"
+                },
+            }
+            _lv_dashes = {
+                "US National": "dot",
+                **{lbl: "solid" for lbl in _lv_labels if lbl != "US National"},
+            }
+
+            _lv_tfig = go.Figure()
+            for _lbl in _lv_labels:
+                _seg = _lv_trend_df[_lv_trend_df["Label"] == _lbl].sort_values("year")
+                _lv_tfig.add_trace(go.Scatter(
+                    x=_seg["year"], y=_seg["Display"],
+                    mode="lines+markers",
+                    name=_lbl,
+                    line=dict(
+                        color=_lv_colors.get(_lbl, ACCENT),
+                        dash=_lv_dashes.get(_lbl, "solid"),
+                        width=2,
+                    ),
+                    marker=dict(size=5),
+                    hovertemplate=(
+                        f"<b>{_lbl}</b><br>"
+                        "%{x}: %{y:,.2f} " + _lv_tunit + "<extra></extra>"
+                    ),
+                ))
+
+            _lv_period_lbl = _LIVESTOCK_PERIOD.get(_lv_species, "")
+            _lv_tfig.update_layout(
+                height=340,
+                margin=dict(l=0, r=10, t=10, b=0),
+                paper_bgcolor=PANEL,
+                plot_bgcolor=PANEL,
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="left", x=0,
+                    font=dict(size=11, color=TEXT),
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                xaxis=dict(
+                    title=f"Year ({_lv_period_lbl} inventory)",
+                    title_font=dict(size=11, color=MUTED),
+                    tickfont=dict(size=10, color=TEXT),
+                    gridcolor=BORDER, showgrid=True,
+                    dtick=2,
+                ),
+                yaxis=dict(
+                    title=f"Inventory ({_lv_tunit})",
+                    title_font=dict(size=11, color=MUTED),
+                    tickfont=dict(size=10, color=TEXT),
+                    gridcolor=BORDER, showgrid=True,
+                    zeroline=False,
+                ),
+            )
+            st.plotly_chart(_lv_tfig, use_container_width=True, key="lv_trend")
 
         st.markdown(
             f"<p style='font-size:0.7rem;color:{MUTED};margin-top:12px;'>"
