@@ -5282,6 +5282,7 @@ def main():
                     title=f"US {stk_crop} {stk_view} — {stk_period_lbl}",
                     y_label=_sl,
                 )
+            _add_logo(_chart_fig, logo_50yr, size=0.18, opacity=1.0)
             _chart(_chart_fig, use_container_width=True, key="stk_chart",
                             config={"displayModeBar": False})
 
@@ -5422,6 +5423,7 @@ def main():
                                tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
                     hovermode="x unified",
                 )
+                _add_logo(fig_disapp, logo_50yr, size=0.15, opacity=1.0)
                 _chart(fig_disapp, use_container_width=True, key="stk_disapp_chart",
                        config={"displayModeBar": False})
 
@@ -7149,6 +7151,7 @@ def main():
                     subunitcolor=BORDER, showlakes=True,
                 ),
             )
+            _add_logo(fig_wmap, logo_50yr, size=0.15, opacity=1.0)
             _chart(fig_wmap, use_container_width=True, config={"displayModeBar": False})
 
             # ── State bar chart ───────────────────────────────────────────────
@@ -7179,40 +7182,117 @@ def main():
                 ),
                 yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
             )
+            _add_logo(fig_wbar, logo_50yr, size=0.18, opacity=1.0)
             _chart(fig_wbar, use_container_width=True, config={"displayModeBar": False})
 
-            # ── County drilldown ──────────────────────────────────────────────
+            # ── County / ASD drilldown ────────────────────────────────────────
             st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
             st.markdown(
                 f"<h4 style='color:{ACCENT};margin-bottom:6px;'>County / ASD Drilldown</h4>",
                 unsafe_allow_html=True,
             )
-            states_available = sorted(wcmd_county["state"].unique().tolist())
-            sel_wcmd_state = st.selectbox("Select State", states_available, key="wcmd_state_sel")
-            county_filtered = wcmd_county[wcmd_county["state"] == sel_wcmd_state].copy()
-            county_filtered = county_filtered.sort_values("est_capacity_bu", ascending=False)
 
-            fig_cbar = go.Figure(go.Bar(
-                x=county_filtered["est_capacity_bu"] / 1e6,
-                y=county_filtered["county"],
-                orientation="h",
-                marker_color=ACCENT,
-                text=(county_filtered["est_capacity_bu"] / 1e6).map("{:.1f}M".format),
-                textposition="outside",
-                textfont=dict(color=TEXT, size=9),
-            ))
-            fig_cbar.update_layout(
-                paper_bgcolor=DARK, plot_bgcolor=SURFACE,
-                font=dict(color=TEXT, family="Arial"),
-                margin=dict(l=20, r=60, t=10, b=40),
-                height=max(300, len(county_filtered) * 22),
-                xaxis=dict(
-                    title="Est. Capacity (million bu)",
-                    gridcolor=BORDER, tickfont=dict(color=MUTED),
-                    title_font=dict(color=MUTED),
-                ),
-                yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER, autorange="reversed"),
-            )
+            @st.cache_data(ttl=86400, show_spinner=False)
+            def load_county_asd_map(cache_ver: str) -> dict:
+                """Build {(state_alpha, county_name_lower): (asd_desc, asd_code)} from NASS corn data."""
+                asd_map = {}
+                for yr in [2024, 2023, 2022, 2021, 2020]:
+                    try:
+                        df = load_nass_county("Corn", yr, cache_ver)
+                    except Exception:
+                        continue
+                    if df.empty or "asd_desc" not in df.columns:
+                        continue
+                    for _, row in df.iterrows():
+                        key = (str(row.get("State", "")).strip().upper(),
+                               str(row.get("County", "")).strip().lower())
+                        if key not in asd_map:
+                            desc = str(row.get("asd_desc", "")).strip().title()
+                            code = str(row.get("asd_code", "")).strip()
+                            if desc and desc.lower() not in ("", "nan"):
+                                asd_map[key] = (desc, code)
+                    if len(asd_map) > 500:
+                        break
+                return asd_map
+
+            county_asd_map = load_county_asd_map(_CACHE_VERSION)
+
+            dc1, dc2, dc3 = st.columns([1.2, 1, 2])
+            with dc1:
+                states_available = sorted(wcmd_county["state"].unique().tolist())
+                sel_wcmd_state = st.selectbox("Select State", states_available, key="wcmd_state_sel")
+            with dc2:
+                wcmd_drill_view = st.radio("View by", ["County", "ASD District"],
+                                           horizontal=True, key="wcmd_drill_view")
+
+            county_filtered = wcmd_county[wcmd_county["state"] == sel_wcmd_state].copy()
+
+            if wcmd_drill_view == "ASD District":
+                # Map county → ASD then aggregate
+                county_filtered["_asd_key"] = list(zip(
+                    county_filtered["state"].str.upper(),
+                    county_filtered["county"].str.strip().str.lower(),
+                ))
+                county_filtered["asd_desc"] = county_filtered["_asd_key"].map(
+                    lambda k: county_asd_map.get(k, (None, None))[0]
+                )
+                county_filtered["asd_code"] = county_filtered["_asd_key"].map(
+                    lambda k: county_asd_map.get(k, (None, None))[1]
+                )
+                asd_agg = county_filtered.groupby("asd_desc").agg(
+                    est_capacity_bu=("est_capacity_bu", "sum"),
+                    counties=("county", "count"),
+                ).reset_index().dropna(subset=["asd_desc"])
+                asd_agg = asd_agg.sort_values("est_capacity_bu", ascending=False)
+                unmatched = county_filtered["asd_desc"].isna().sum()
+                if unmatched > 0:
+                    st.caption(f"⚠️ {unmatched} counties could not be mapped to an ASD district — shown in state total but excluded from chart.")
+
+                fig_cbar = go.Figure(go.Bar(
+                    x=asd_agg["est_capacity_bu"] / 1e6,
+                    y=asd_agg["asd_desc"],
+                    orientation="h",
+                    marker_color=ACCENT,
+                    text=(asd_agg["est_capacity_bu"] / 1e6).map("{:.1f}M".format),
+                    textposition="outside",
+                    textfont=dict(color=TEXT, size=9),
+                    customdata=asd_agg["counties"],
+                    hovertemplate="%{y}<br>Capacity: %{x:.1f}M bu<br>Counties: %{customdata}<extra></extra>",
+                ))
+                fig_cbar.update_layout(
+                    paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                    font=dict(color=TEXT, family="Arial"),
+                    margin=dict(l=20, r=60, t=10, b=40),
+                    height=max(300, len(asd_agg) * 36),
+                    xaxis=dict(
+                        title="Est. Capacity (million bu)", gridcolor=BORDER,
+                        tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
+                    ),
+                    yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER, autorange="reversed"),
+                )
+            else:
+                county_filtered = county_filtered.sort_values("est_capacity_bu", ascending=False)
+                fig_cbar = go.Figure(go.Bar(
+                    x=county_filtered["est_capacity_bu"] / 1e6,
+                    y=county_filtered["county"],
+                    orientation="h",
+                    marker_color=ACCENT,
+                    text=(county_filtered["est_capacity_bu"] / 1e6).map("{:.1f}M".format),
+                    textposition="outside",
+                    textfont=dict(color=TEXT, size=9),
+                ))
+                fig_cbar.update_layout(
+                    paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                    font=dict(color=TEXT, family="Arial"),
+                    margin=dict(l=20, r=60, t=10, b=40),
+                    height=max(300, len(county_filtered) * 22),
+                    xaxis=dict(
+                        title="Est. Capacity (million bu)", gridcolor=BORDER,
+                        tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
+                    ),
+                    yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER, autorange="reversed"),
+                )
+            _add_logo(fig_cbar, logo_50yr, size=0.15, opacity=1.0)
             _chart(fig_cbar, use_container_width=True, config={"displayModeBar": False})
 
             # ── State table ───────────────────────────────────────────────────
@@ -7290,6 +7370,7 @@ def main():
                     yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
                     hovermode="y unified",
                 )
+                _add_logo(fig_nsc, logo_50yr, size=0.15, opacity=1.0)
                 _chart(fig_nsc, use_container_width=True, config={"displayModeBar": False})
 
                 # Trend: national on-farm vs off-farm
@@ -7430,7 +7511,7 @@ def main():
             with sc_c3:
                 storage_layer = st.radio(
                     "Storage Layer",
-                    ["WCMD Licensed", "NASS Off-Farm", "NASS Total (On+Off)"],
+                    ["NASS Total (On+Off)", "NASS Off-Farm", "NASS On-Farm", "WCMD Licensed"],
                     horizontal=True, key="svc_layer",
                 )
 
@@ -7475,9 +7556,11 @@ def main():
                 # Active storage column based on layer selector
                 if storage_layer == "NASS Off-Farm":
                     df["storage_bu"] = df["nass_offfarm_bu"]
+                elif storage_layer == "NASS On-Farm":
+                    df["storage_bu"] = df["nass_onfarm_bu"]
                 elif storage_layer == "NASS Total (On+Off)":
                     df["storage_bu"] = df["nass_offfarm_bu"] + df["nass_onfarm_bu"]
-                else:
+                else:  # WCMD Licensed
                     df["storage_bu"] = df["wcmd_licensed_bu"].fillna(0)
 
                 df["ratio"] = df.apply(
@@ -7555,13 +7638,19 @@ def main():
                 ))
 
             # Total Storage line overlay
+            _svc_line_color = {
+                "WCMD Licensed":       "#f59e0b",
+                "NASS Off-Farm":       "#e0e0e0",
+                "NASS On-Farm":        "#60a5fa",
+                "NASS Total (On+Off)": "#e0e0e0",
+            }.get(storage_layer, "#e0e0e0")
             fig_svc.add_trace(go.Scatter(
                 name=storage_layer,
                 x=df_chart["state"],
                 y=df_chart["storage_bu"] / 1e6,
                 mode="lines+markers",
-                line=dict(color="#1a1a1a" if storage_layer == "WCMD Licensed" else "#e0e0e0", width=2.5),
-                marker=dict(color="#1a1a1a" if storage_layer == "WCMD Licensed" else "#e0e0e0", size=6, symbol="line-ew-open"),
+                line=dict(color=_svc_line_color, width=2.5),
+                marker=dict(color=_svc_line_color, size=6, symbol="line-ew-open"),
                 hovertemplate="Storage: %{y:,.0f}M bu<extra></extra>",
             ))
 
@@ -7615,6 +7704,7 @@ def main():
                 annotations=annotations_svc + yoy_anns,
                 hovermode="x unified",
             )
+            _add_logo(fig_svc, logo_50yr, size=0.18, opacity=1.0)
             _chart(fig_svc, use_container_width=True, config={"displayModeBar": False})
 
             # YoY label below chart
@@ -7769,6 +7859,7 @@ def main():
                 annotations=hist_anns,
                 hovermode="x unified",
             )
+            _add_logo(fig_hist, logo_50yr, size=0.18, opacity=1.0)
             _chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
 
             # ── State detail table ─────────────────────────────────────────────
