@@ -5343,6 +5343,106 @@ def main():
                 "Source: USDA NASS Grain Stocks Survey and Crop Production (state level only)."
             )
 
+            # ── Disappearance (Sep 1 beg stocks + production − Sep 1 end stocks) ──
+            st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
+                        unsafe_allow_html=True)
+            st.markdown(
+                f"<p style='color:{MUTED};font-size:0.82rem;font-weight:600;"
+                f"margin:0 0 4px 0;letter-spacing:0.04em;'>"
+                f"📉 DISAPPEARANCE — {stk_crop} | Marketing Year (Sep 1 → Sep 1)</p>",
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f"<p style='color:{MUTED};font-size:0.79rem;margin:0 0 10px;'>"
+                "Disappearance = Sep 1 Beginning Stocks + Production − Sep 1 Ending Stocks. "
+                "Represents total domestic use + exports consumed from the marketing year's supply.</p>",
+                unsafe_allow_html=True,
+            )
+
+            _disapp_years = sorted([y for y in NASS_YEARS if y <= stk_year - 1 and y >= 2015])
+            _disapp_rows = []
+            for _dy in _disapp_years:
+                _sep_dy  = load_grain_stocks(stk_crop, _dy,     "FIRST OF SEP", _CACHE_VERSION)
+                _sep_dy1 = load_grain_stocks(stk_crop, _dy + 1, "FIRST OF SEP", _CACHE_VERSION)
+                _prod_dy = _load_state_for_stat(stk_crop, _dy, "production", _CACHE_VERSION)
+                _begin_bu = float(_sep_dy["Total"].sum())  if not _sep_dy.empty  else None
+                _end_bu   = float(_sep_dy1["Total"].sum()) if not _sep_dy1.empty else None
+                _prod_bu  = float(_prod_dy["Value"].sum()) if not _prod_dy.empty else None
+                if _begin_bu and _end_bu and _prod_bu:
+                    _disapp_rows.append({
+                        "year":     _dy,
+                        "begin_bu": _begin_bu,
+                        "prod_bu":  _prod_bu,
+                        "end_bu":   _end_bu,
+                        "disapp_bu": _begin_bu + _prod_bu - _end_bu,
+                    })
+
+            if _disapp_rows:
+                _dd = pd.DataFrame(_disapp_rows)
+                _su_d, _sl_d = _auto_bu(_dd["disapp_bu"].max())
+
+                fig_disapp = go.Figure()
+                fig_disapp.add_trace(go.Bar(
+                    x=_dd["year"].astype(str),
+                    y=_dd["disapp_bu"] / _su_d,
+                    marker_color=[ACCENT if y == _dd["year"].max() else "#64748b"
+                                  for y in _dd["year"]],
+                    name="Disappearance",
+                    hovertemplate="Disappearance: %{y:.2f} " + _sl_d + "<extra></extra>",
+                ))
+                fig_disapp.add_trace(go.Scatter(
+                    x=_dd["year"].astype(str),
+                    y=_dd["prod_bu"] / _su_d,
+                    mode="lines+markers",
+                    line=dict(color="#f59e0b", width=2, dash="dot"),
+                    marker=dict(color="#f59e0b", size=6),
+                    name="Production",
+                    hovertemplate="Production: %{y:.2f} " + _sl_d + "<extra></extra>",
+                ))
+                fig_disapp.add_trace(go.Scatter(
+                    x=_dd["year"].astype(str),
+                    y=(_dd["begin_bu"] + _dd["prod_bu"]) / _su_d,
+                    mode="lines+markers",
+                    line=dict(color="#60a5fa", width=1.5, dash="dash"),
+                    marker=dict(color="#60a5fa", size=5),
+                    name="Total Supply",
+                    hovertemplate="Total Supply: %{y:.2f} " + _sl_d + "<extra></extra>",
+                ))
+                fig_disapp.update_layout(
+                    paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                    font=dict(color=TEXT, family="Arial"),
+                    margin=dict(l=60, r=20, t=30, b=50),
+                    height=340,
+                    showlegend=True,
+                    legend=dict(font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
+                                orientation="h", yanchor="bottom", y=1.02, x=0),
+                    xaxis=dict(title="Marketing Year Start", tickfont=dict(color=TEXT),
+                               gridcolor=BORDER),
+                    yaxis=dict(title=_sl_d, gridcolor=BORDER,
+                               tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
+                    hovermode="x unified",
+                )
+                _chart(fig_disapp, use_container_width=True, key="stk_disapp_chart",
+                       config={"displayModeBar": False})
+
+                _dd_disp = pd.DataFrame({
+                    "Mkt Year": _dd["year"].map(lambda y: f"Sep {y}–{y+1}"),
+                    "Beg Stocks (M bu)":   (_dd["begin_bu"] / 1e6).map(lambda v: f"{v:,.0f}"),
+                    "Production (M bu)":   (_dd["prod_bu"]  / 1e6).map(lambda v: f"{v:,.0f}"),
+                    "Total Supply (M bu)": ((_dd["begin_bu"]+_dd["prod_bu"])/1e6).map(lambda v: f"{v:,.0f}"),
+                    "End Stocks (M bu)":   (_dd["end_bu"]   / 1e6).map(lambda v: f"{v:,.0f}"),
+                    "Disappearance (M bu)":(_dd["disapp_bu"]/ 1e6).map(lambda v: f"{v:,.0f}"),
+                    "Disapp % of Supply":  (_dd["disapp_bu"]/(_dd["begin_bu"]+_dd["prod_bu"])*100
+                                           ).map(lambda v: f"{v:.1f}%"),
+                })
+                st.dataframe(_dd_disp, use_container_width=True, hide_index=True)
+                st.caption(
+                    f"Marketing year runs Sep 1 to Aug 31. Most recent year shown: Sep {_disapp_years[-1]}–{_disapp_years[-1]+1}. "
+                    "Source: USDA NASS Grain Stocks (Sep 1) and Crop Production."
+                )
+            else:
+                st.info("Insufficient Sep 1 stocks data to compute disappearance for this crop/year range.")
+
     # ══════════════════════════════════════════════════════════════════════════
     # ACREAGE SUMMARY TAB
     # ══════════════════════════════════════════════════════════════════════════
@@ -7239,10 +7339,10 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     with tab_storage_cmp:
         st.markdown(
-            f"<h3 style='color:{ACCENT};margin-bottom:4px;'>Storage Capacity vs. Production & Sep 1 Stocks</h3>"
-            f"<p style='color:{MUTED};font-size:0.85rem;margin-top:0;'>Three layers of grain storage — USDA FSA licensed warehouses, "
-            "NASS total off-farm capacity, and NASS on-farm (temporary/bin) capacity — compared to production "
-            "(corn, soybeans, wheat, oats, sorghum) and September 1 stocks by state.</p>",
+            f"<h3 style='color:{ACCENT};margin-bottom:4px;'>Grain Supply to Storage</h3>"
+            f"<p style='color:{MUTED};font-size:0.85rem;margin-top:0;'>Annual grain supply (production) stacked by commodity vs. "
+            "total licensed storage capacity (USDA FSA WCMD). Ratio &lt; 1.00 indicates a space deficit. "
+            "Historical trend uses NASS total off-farm storage capacity.</p>",
             unsafe_allow_html=True,
         )
 
@@ -7302,284 +7402,401 @@ def main():
 
         if stocks_df is None:
             st.warning("Data files missing. Run NASS data fetcher and WCMD scraper first.")
-            silage_df = None
         else:
-            sel_year = st.selectbox("Year", sorted(prod_df["year"].unique(), reverse=True), key="sc_year")
-            yr = str(sel_year)
+            # ── Commodity colors (match reference chart style) ─────────────────
+            COMM_COLORS_SVC = {
+                "CORN+SORGHUM": "#1f5c2e",
+                "SOYBEANS":     "#a8d5e8",
+                "WHEAT":        "#e0b800",
+                "OATS":         "#c0392b",
+            }
 
-            # ── Sep 1 stocks for selected year ────────────────────────────────
-            stocks_yr_df = stocks_df[stocks_df["year"] == yr]
-            if stocks_yr_df.empty and int(yr) > int(stocks_df["year"].max()):
-                stocks_yr_df = stocks_df[stocks_df["year"] == stocks_df["year"].max()]
-                st.info(f"Sep 1 stocks not yet published for {yr}; showing {stocks_df['year'].max()} stocks.")
-            stocks_yr = stocks_yr_df.groupby("state_alpha")["value_bu"].sum().reset_index()
-            stocks_yr.columns = ["state", "sep1_stocks_bu"]
+            # ── Region definitions ─────────────────────────────────────────────
+            REGIONS_SVC = {
+                "All States":   None,
+                "ECB (IL/IN/OH/MI)":             ["IL","IN","OH","MI"],
+                "High Plains (ND/SD/NE/KS)":     ["ND","SD","NE","KS"],
+                "Corn Belt":                     ["IA","IL","IN","MN","MO","OH","SD","NE","KS","ND"],
+                "Midsouth (AR/MS/TN/MO/LA)":     ["AR","MS","TN","MO","LA"],
+            }
 
-            # ── Production for selected year ───────────────────────────────────
-            prod_yr = prod_df[prod_df["year"] == yr].groupby("state_alpha")["value_bu"].sum().reset_index()
-            prod_yr.columns = ["state", "production_bu"]
+            # ── Controls ───────────────────────────────────────────────────────
+            sc_c1, sc_c2, sc_c3 = st.columns([1, 1.6, 1])
+            with sc_c1:
+                avail_yrs_svc = sorted(prod_df["year"].unique(), reverse=True)
+                sel_yr_svc = st.selectbox("Year", avail_yrs_svc, key="svc_year")
+            with sc_c2:
+                sel_region_svc = st.selectbox("Region", list(REGIONS_SVC.keys()), key="svc_region")
+            with sc_c3:
+                storage_layer = st.radio(
+                    "Storage Layer",
+                    ["WCMD Licensed", "NASS Off-Farm", "NASS Total (On+Off)"],
+                    horizontal=True, key="svc_layer",
+                )
 
-            # ── NASS capacity for selected year (closest available) ────────────
-            nass_off_state = pd.DataFrame(columns=["state", "nass_offfarm_bu"])
-            nass_on_state  = pd.DataFrame(columns=["state", "nass_onfarm_bu"])
-            nass_yr_label = yr
-            if nass_cap_df is not None:
-                avail_nc_yrs = sorted(nass_cap_df["year"].unique())
-                nc_yr = yr if yr in avail_nc_yrs else max((y for y in avail_nc_yrs if y <= yr), default=avail_nc_yrs[-1])
-                nass_yr_label = nc_yr
-                nc_sub = nass_cap_df[nass_cap_df["year"] == nc_yr]
-                off = nc_sub[nc_sub["short_desc"].str.contains("OFF FARM", na=False)][["state_alpha","value_bu"]]
-                on  = nc_sub[nc_sub["short_desc"].str.contains("ON FARM",  na=False)][["state_alpha","value_bu"]]
-                nass_off_state = off.rename(columns={"state_alpha":"state","value_bu":"nass_offfarm_bu"})
-                nass_on_state  = on.rename(columns={"state_alpha":"state","value_bu":"nass_onfarm_bu"})
+            yr_svc  = str(sel_yr_svc)
+            yr_prev = str(int(yr_svc) - 1)
+            region_states = REGIONS_SVC[sel_region_svc]
 
-            # ── Merge everything ──────────────────────────────────────────────
-            cmp = cap_df.merge(prod_yr, on="state", how="left")
-            cmp = cmp.merge(stocks_yr, on="state", how="left")
-            cmp = cmp.merge(nass_off_state, on="state", how="left")
-            cmp = cmp.merge(nass_on_state,  on="state", how="left")
-            # Corn silage (tons — separate unit, shown alongside grain production)
-            silage_yr_df = pd.DataFrame(columns=["state", "silage_tons"])
-            if silage_df is not None:
-                sl_yr = silage_df[silage_df["year"] == yr]
-                if sl_yr.empty and int(yr) > int(silage_df["year"].max()):
-                    sl_yr = silage_df[silage_df["year"] == silage_df["year"].max()]
-                silage_yr_df = sl_yr.rename(columns={"state_alpha": "state", "value_tons": "silage_tons"})[["state","silage_tons"]]
-            cmp = cmp.merge(silage_yr_df, on="state", how="left")
-            cmp = cmp.dropna(subset=["wcmd_licensed_bu", "production_bu"])
+            # ── Helper: build per-state supply+storage df for a given year ─────
+            def _build_svc_df(yr_str):
+                pg = prod_df[prod_df["year"] == yr_str]
+                corn_sorg = pg[pg["commodity_desc"].isin(["CORN","SORGHUM"])].groupby("state_alpha")["value_bu"].sum().reset_index()
+                corn_sorg.columns = ["state","corn_sorg_bu"]
+                soybeans  = pg[pg["commodity_desc"] == "SOYBEANS"].groupby("state_alpha")["value_bu"].sum().reset_index()
+                soybeans.columns = ["state","soybeans_bu"]
+                wheat     = pg[pg["commodity_desc"] == "WHEAT"].groupby("state_alpha")["value_bu"].sum().reset_index()
+                wheat.columns = ["state","wheat_bu"]
+                oats      = pg[pg["commodity_desc"] == "OATS"].groupby("state_alpha")["value_bu"].sum().reset_index()
+                oats.columns = ["state","oats_bu"]
 
-            # ── National totals ────────────────────────────────────────────────
-            nat_wcmd    = cmp["wcmd_licensed_bu"].sum()
-            nat_offfarm = cmp["nass_offfarm_bu"].sum() if "nass_offfarm_bu" in cmp else 0
-            nat_onfarm  = cmp["nass_onfarm_bu"].sum()  if "nass_onfarm_bu"  in cmp else 0
-            nat_total   = nat_offfarm + nat_onfarm
-            nat_prod    = cmp["production_bu"].sum()
-            nat_stocks  = cmp["sep1_stocks_bu"].sum()
+                df = corn_sorg.merge(soybeans, on="state", how="outer") \
+                              .merge(wheat,    on="state", how="outer") \
+                              .merge(oats,     on="state", how="outer") \
+                              .merge(cap_df,   on="state", how="inner")
+                for c in ["corn_sorg_bu","soybeans_bu","wheat_bu","oats_bu"]:
+                    df[c] = df[c].fillna(0)
+                df["total_supply_bu"] = df[["corn_sorg_bu","soybeans_bu","wheat_bu","oats_bu"]].sum(axis=1)
+
+                # NASS capacity for that year
+                nass_off = pd.DataFrame(columns=["state","nass_offfarm_bu"])
+                nass_on  = pd.DataFrame(columns=["state","nass_onfarm_bu"])
+                if nass_cap_df is not None:
+                    avail_nc = sorted(nass_cap_df["year"].unique())
+                    nc_yr = yr_str if yr_str in avail_nc else max((y for y in avail_nc if y <= yr_str), default=avail_nc[-1])
+                    nc_sub = nass_cap_df[nass_cap_df["year"] == nc_yr]
+                    off = nc_sub[nc_sub["short_desc"].str.contains("OFF FARM", na=False)][["state_alpha","value_bu"]].rename(columns={"state_alpha":"state","value_bu":"nass_offfarm_bu"})
+                    on  = nc_sub[nc_sub["short_desc"].str.contains("ON FARM",  na=False)][["state_alpha","value_bu"]].rename(columns={"state_alpha":"state","value_bu":"nass_onfarm_bu"})
+                    nass_off = off; nass_on = on
+                df = df.merge(nass_off, on="state", how="left").merge(nass_on, on="state", how="left")
+                df["nass_offfarm_bu"] = df.get("nass_offfarm_bu", pd.Series(0, index=df.index)).fillna(0)
+                df["nass_onfarm_bu"]  = df.get("nass_onfarm_bu",  pd.Series(0, index=df.index)).fillna(0)
+
+                # Active storage column based on layer selector
+                if storage_layer == "NASS Off-Farm":
+                    df["storage_bu"] = df["nass_offfarm_bu"]
+                elif storage_layer == "NASS Total (On+Off)":
+                    df["storage_bu"] = df["nass_offfarm_bu"] + df["nass_onfarm_bu"]
+                else:
+                    df["storage_bu"] = df["wcmd_licensed_bu"].fillna(0)
+
+                df["ratio"] = df.apply(
+                    lambda r: r["storage_bu"] / r["total_supply_bu"] if r["total_supply_bu"] > 0 else None, axis=1
+                )
+                return df
+
+            df_cur  = _build_svc_df(yr_svc)
+            df_prev = _build_svc_df(yr_prev)
+
+            ratio_prev_map = dict(zip(df_prev["state"], df_prev["ratio"]))
+
+            if region_states:
+                df_cur = df_cur[df_cur["state"].isin(region_states)]
+
+            df_chart = df_cur.dropna(subset=["total_supply_bu"]) \
+                             .sort_values("total_supply_bu", ascending=False)
 
             # ── KPI row ────────────────────────────────────────────────────────
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("WCMD Licensed Capacity",    f"{nat_wcmd/1e9:.1f}B bu",    help="Federally licensed grain warehouses (USDA FSA WCMD)")
-            k2.metric("Total Off-Farm (NASS)",      f"{nat_offfarm/1e9:.1f}B bu", help=f"All commercial elevators & warehouses — NASS {nass_yr_label}")
-            k3.metric("On-Farm / Temp (NASS)",      f"{nat_onfarm/1e9:.1f}B bu",  help=f"Farmer-owned bins, bags & temporary structures — NASS {nass_yr_label}")
-            k4.metric(f"Production ({yr})",         f"{nat_prod/1e9:.1f}B bu",    help="Corn + soybeans + wheat + oats + sorghum")
-            k5.metric("Sep 1 Stocks",               f"{nat_stocks/1e9:.1f}B bu" if nat_stocks > 0 else "N/A")
+            nat_supply  = df_chart["total_supply_bu"].sum()
+            nat_storage = df_chart["storage_bu"].sum()
+            nat_ratio   = nat_storage / nat_supply if nat_supply > 0 else 0
+            nat_deficit = nat_storage - nat_supply
 
-            st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+            nat_supply_p  = df_prev[df_prev["state"].isin(df_chart["state"])]["total_supply_bu"].sum()
+            nat_storage_p = df_prev[df_prev["state"].isin(df_chart["state"])]["storage_bu"].sum()
+            nat_ratio_p   = nat_storage_p / nat_supply_p if nat_supply_p > 0 else 0
 
-            # ── National capacity-layer waterfall vs production & stocks ───────
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric(
+                f"Total Supply ({yr_svc})",
+                f"{nat_supply/1e9:.2f}B bu",
+                delta=f"{(nat_supply-nat_supply_p)/1e6:+.0f}M bu vs {yr_prev}",
+            )
+            k2.metric(
+                f"{storage_layer} Capacity",
+                f"{nat_storage/1e9:.2f}B bu",
+            )
+            k3.metric(
+                "Space Ratio (Storage/Supply)",
+                f"{nat_ratio:.2f}",
+                delta=f"{nat_ratio - nat_ratio_p:+.2f} YoY",
+                delta_color="normal",
+            )
+            k4.metric(
+                "Space Surplus / (Deficit)",
+                f"{nat_deficit/1e6:+.0f}M bu",
+                delta=f"{'Surplus' if nat_deficit >= 0 else 'Deficit'}",
+                delta_color="normal" if nat_deficit >= 0 else "inverse",
+            )
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+            # ── State Supply vs Storage chart ──────────────────────────────────
             st.markdown(
-                f"<h4 style='color:{ACCENT};margin-bottom:6px;'>National Capacity Layers vs. Production & Stocks ({yr})</h4>",
+                f"<h4 style='color:{ACCENT};margin-bottom:4px;'>Grain Supply to Storage by State — {yr_svc} (Million Bushels)</h4>",
                 unsafe_allow_html=True,
             )
-            COMM_COLORS = {
-                "CORN": "#f59e0b", "SOYBEANS": "#34d399", "WHEAT": "#c084fc",
-                "OATS": "#60a5fa", "SORGHUM": "#f87171",
-            }
-            prod_comm = prod_df[prod_df["year"] == yr].groupby("commodity_desc")["value_bu"].sum()
 
-            fig_nat = go.Figure()
-            # Stacked production bars (grain — bushels, left axis)
-            for comm in ["CORN", "SOYBEANS", "WHEAT", "OATS", "SORGHUM"]:
-                val = prod_comm.get(comm, 0)
-                fig_nat.add_trace(go.Bar(
-                    name=comm.title(),
-                    x=["Production (bu)"],
-                    y=[val / 1e9],
-                    marker_color=COMM_COLORS[comm],
-                    hovertemplate=f"{comm.title()}: %{{y:.2f}}B bu<extra></extra>",
-                ))
-            # Sep 1 Stocks single bar
-            fig_nat.add_trace(go.Bar(
-                name="Sep 1 Stocks",
-                x=["Sep 1 Stocks (bu)"],
-                y=[nat_stocks / 1e9 if nat_stocks > 0 else 0],
-                marker_color="#60a5fa",
-                hovertemplate="Sep 1 Stocks: %{y:.2f}B bu<extra></extra>",
-            ))
-            # Capacity bars
-            for label, val, color in [
-                ("WCMD Licensed",   nat_wcmd,    "#e74c3c"),
-                ("Off-Farm (NASS)", nat_offfarm, "#f97316"),
-                ("On-Farm (NASS)",  nat_onfarm,  "#a3e635"),
+            fig_svc = go.Figure()
+
+            # Stacked supply bars
+            for comm_key, col_name, color in [
+                ("CORN+SORGHUM", "corn_sorg_bu",  COMM_COLORS_SVC["CORN+SORGHUM"]),
+                ("SOYBEANS",     "soybeans_bu",   COMM_COLORS_SVC["SOYBEANS"]),
+                ("WHEAT",        "wheat_bu",      COMM_COLORS_SVC["WHEAT"]),
+                ("OATS",         "oats_bu",       COMM_COLORS_SVC["OATS"]),
             ]:
-                fig_nat.add_trace(go.Bar(
-                    name=label,
-                    x=[label],
-                    y=[val / 1e9],
+                fig_svc.add_trace(go.Bar(
+                    name=comm_key.replace("+", " & ").title(),
+                    x=df_chart["state"],
+                    y=df_chart[col_name] / 1e6,
                     marker_color=color,
-                    hovertemplate=f"{label}: %{{y:.2f}}B bu<extra></extra>",
+                    hovertemplate=f"{comm_key.replace('+', ' & ').title()}: %{{y:,.0f}}M bu<extra></extra>",
                 ))
-            # Corn silage — secondary y-axis (tons)
-            if silage_df is not None:
-                nat_silage = cmp["silage_tons"].sum() if "silage_tons" in cmp.columns else 0
-                if nat_silage > 0:
-                    fig_nat.add_trace(go.Bar(
-                        name="Corn Silage (tons)",
-                        x=["Corn Silage (tons)"],
-                        y=[nat_silage / 1e6],
-                        marker_color="#d946ef",
-                        yaxis="y2",
-                        hovertemplate="Corn Silage: %{y:.1f}M tons<extra></extra>",
+
+            # Total Storage line overlay
+            fig_svc.add_trace(go.Scatter(
+                name=storage_layer,
+                x=df_chart["state"],
+                y=df_chart["storage_bu"] / 1e6,
+                mode="lines+markers",
+                line=dict(color="#1a1a1a" if storage_layer == "WCMD Licensed" else "#e0e0e0", width=2.5),
+                marker=dict(color="#1a1a1a" if storage_layer == "WCMD Licensed" else "#e0e0e0", size=6, symbol="line-ew-open"),
+                hovertemplate="Storage: %{y:,.0f}M bu<extra></extra>",
+            ))
+
+            # Ratio annotations above each bar
+            annotations_svc = []
+            for _, row in df_chart.iterrows():
+                if row["total_supply_bu"] > 0 and pd.notna(row["ratio"]):
+                    annotations_svc.append(dict(
+                        x=row["state"],
+                        y=row["total_supply_bu"] / 1e6 + row["total_supply_bu"] / 1e6 * 0.03,
+                        text=f"{row['ratio']:.2f}",
+                        showarrow=False,
+                        font=dict(size=9, color="#94a3b8"),
+                        yanchor="bottom",
                     ))
-            fig_nat.update_layout(
+
+            # YoY delta text (below x-axis via annotation trick)
+            yoy_anns = []
+            min_y_svc = -(df_chart["total_supply_bu"].max() / 1e6 * 0.12)
+            for _, row in df_chart.iterrows():
+                prev_r = ratio_prev_map.get(row["state"])
+                delta_r = row["ratio"] - prev_r if (pd.notna(row["ratio"]) and prev_r is not None) else None
+                if delta_r is not None:
+                    color_d = "#10b981" if delta_r >= 0 else "#f87171"
+                    yoy_anns.append(dict(
+                        x=row["state"], y=min_y_svc,
+                        text=f"<b style='color:{color_d}'>{delta_r:+.2f}</b>",
+                        showarrow=False,
+                        font=dict(size=8),
+                        yanchor="top",
+                    ))
+
+            fig_svc.update_layout(
                 paper_bgcolor=DARK, plot_bgcolor=SURFACE,
                 font=dict(color=TEXT, family="Arial"),
-                margin=dict(l=40, r=60, t=10, b=50),
-                height=400,
+                margin=dict(l=60, r=20, t=20, b=80),
+                height=500,
                 barmode="stack",
                 showlegend=True,
                 legend=dict(
                     font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
                     orientation="h", yanchor="bottom", y=1.02, x=0,
                 ),
-                xaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
+                xaxis=dict(tickfont=dict(color=TEXT, size=11), gridcolor=BORDER, tickangle=0),
                 yaxis=dict(
-                    title="Billion Bushels",
+                    title="Million Bushels",
                     gridcolor=BORDER, tickfont=dict(color=MUTED),
                     title_font=dict(color=MUTED),
+                    range=[min_y_svc, df_chart["total_supply_bu"].max() / 1e6 * 1.15],
                 ),
-                yaxis2=dict(
-                    title="Million Tons (Silage)",
-                    overlaying="y", side="right",
-                    tickfont=dict(color="#d946ef", size=10),
-                    title_font=dict(color="#d946ef"),
-                    showgrid=False,
-                ),
+                annotations=annotations_svc + yoy_anns,
                 hovermode="x unified",
             )
-            _chart(fig_nat, use_container_width=True, config={"displayModeBar": False})
+            _chart(fig_svc, use_container_width=True, config={"displayModeBar": False})
 
-            # ── State grouped bar: all three capacity layers ───────────────────
+            # YoY label below chart
             st.markdown(
-                f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:24px;'>State Storage Layers vs. Production ({yr})</h4>",
+                f"<p style='color:{MUTED};font-size:0.77rem;margin-top:-8px;margin-bottom:16px;'>"
+                f"Numbers above bars = Storage/Supply ratio. Row below x-axis = YoY ratio change vs {yr_prev}.</p>",
                 unsafe_allow_html=True,
             )
-            top_n = cmp.nlargest(20, "production_bu").sort_values("production_bu")
-            fig_state = go.Figure()
-            fig_state.add_trace(go.Bar(
-                name="Production", x=top_n["production_bu"] / 1e9, y=top_n["state"],
-                orientation="h", marker_color="#94a3b8",
-                hovertemplate="Production: %{x:.2f}B bu<extra></extra>",
-            ))
-            fig_state.add_trace(go.Bar(
-                name="Sep 1 Stocks", x=top_n["sep1_stocks_bu"] / 1e9, y=top_n["state"],
-                orientation="h", marker_color="#60a5fa",
-                hovertemplate="Sep 1 Stocks: %{x:.2f}B bu<extra></extra>",
-            ))
-            fig_state.add_trace(go.Bar(
-                name="WCMD Licensed", x=top_n["wcmd_licensed_bu"] / 1e9, y=top_n["state"],
-                orientation="h", marker_color="#e74c3c",
-                hovertemplate="WCMD Licensed: %{x:.2f}B bu<extra></extra>",
-            ))
-            if "nass_offfarm_bu" in top_n.columns:
-                fig_state.add_trace(go.Bar(
-                    name="Off-Farm (NASS)", x=top_n["nass_offfarm_bu"] / 1e9, y=top_n["state"],
-                    orientation="h", marker_color="#f97316",
-                    hovertemplate="Off-Farm NASS: %{x:.2f}B bu<extra></extra>",
+
+            # ── Regional summary table ─────────────────────────────────────────
+            ECB_STATES       = ["IL","IN","OH","MI"]
+            HIPL_STATES      = ["ND","SD","NE","KS"]
+            CORNBELT_STATES  = ["IA","IL","IN","MN","MO","OH","SD","NE","KS","ND"]
+
+            def _region_summary(df_c, df_p, states, label):
+                sub_c = df_c[df_c["state"].isin(states)]
+                sub_p = df_p[df_p["state"].isin(states)]
+                sup_c  = sub_c["total_supply_bu"].sum()
+                sto_c  = sub_c["storage_bu"].sum()
+                sup_p  = sub_p["total_supply_bu"].sum()
+                sto_p  = sub_p["storage_bu"].sum()
+                def_c  = sto_c - sup_c
+                def_p  = sto_p - sup_p
+                chg    = def_c - def_p
+                ratio_c = sto_c / sup_c if sup_c > 0 else None
+                ratio_p = sto_p / sup_p if sup_p > 0 else None
+                return {
+                    "Region": label,
+                    "Supply (M bu)": f"{sup_c/1e6:,.0f}",
+                    "Storage (M bu)": f"{sto_c/1e6:,.0f}",
+                    f"Space {yr_svc}": f"{def_c/1e6:+,.0f}",
+                    f"Space {yr_prev}": f"{def_p/1e6:+,.0f}",
+                    "YoY Change": f"{chg/1e6:+,.0f}",
+                    f"Ratio {yr_svc}": f"{ratio_c:.2f}" if ratio_c else "—",
+                    f"Ratio {yr_prev}": f"{ratio_p:.2f}" if ratio_p else "—",
+                }
+
+            df_full_cur  = _build_svc_df(yr_svc)
+            df_full_prev = _build_svc_df(yr_prev)
+            region_rows = [
+                _region_summary(df_full_cur, df_full_prev, ECB_STATES,      "ECB (IL/IN/OH/MI)"),
+                _region_summary(df_full_cur, df_full_prev, HIPL_STATES,     "High Plains (ND/SD/NE/KS)"),
+                _region_summary(df_full_cur, df_full_prev, CORNBELT_STATES, "Corn Belt (10-state)"),
+            ]
+            reg_df = pd.DataFrame(region_rows)
+
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:4px;margin-top:20px;'>Regional Space Summary</h4>",
+                unsafe_allow_html=True,
+            )
+            st.dataframe(reg_df, use_container_width=True, hide_index=True)
+
+            # ── Historical trend: selected region ─────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:4px;margin-top:24px;'>"
+                f"{'Corn Belt' if sel_region_svc == 'All States' else sel_region_svc} Grain Supply to Storage — Historical</h4>",
+                unsafe_allow_html=True,
+            )
+
+            hist_states = region_states if region_states else CORNBELT_STATES
+            hist_yrs    = [y for y in sorted(prod_df["year"].unique()) if int(y) >= 2015]
+
+            # Build historical data using NASS off-farm as storage line (available annually)
+            hist_rows = []
+            for hy in hist_yrs:
+                hpg = prod_df[prod_df["year"] == hy]
+                corn_s  = hpg[hpg["commodity_desc"].isin(["CORN","SORGHUM"]) & hpg["state_alpha"].isin(hist_states)]["value_bu"].sum()
+                soy_s   = hpg[(hpg["commodity_desc"] == "SOYBEANS") & hpg["state_alpha"].isin(hist_states)]["value_bu"].sum()
+                wht_s   = hpg[(hpg["commodity_desc"] == "WHEAT")    & hpg["state_alpha"].isin(hist_states)]["value_bu"].sum()
+                oat_s   = hpg[(hpg["commodity_desc"] == "OATS")     & hpg["state_alpha"].isin(hist_states)]["value_bu"].sum()
+                total_s = corn_s + soy_s + wht_s + oat_s
+
+                # Storage: NASS off-farm for historical, WCMD for latest
+                nass_sto = 0
+                if nass_cap_df is not None:
+                    avail_nc = sorted(nass_cap_df["year"].unique())
+                    nc_yr_h = hy if hy in avail_nc else max((y for y in avail_nc if y <= hy), default=avail_nc[-1])
+                    nc_h = nass_cap_df[(nass_cap_df["year"] == nc_yr_h) & nass_cap_df["short_desc"].str.contains("OFF FARM", na=False)]
+                    nass_sto = nc_h[nc_h["state_alpha"].isin(hist_states)]["value_bu"].sum()
+                wcmd_sto = df_full_cur[df_full_cur["state"].isin(hist_states)]["wcmd_licensed_bu"].sum()
+
+                hist_rows.append({
+                    "year": int(hy),
+                    "corn_sorg": corn_s / 1e6,
+                    "soybeans":  soy_s  / 1e6,
+                    "wheat":     wht_s  / 1e6,
+                    "oats":      oat_s  / 1e6,
+                    "total_supply": total_s / 1e6,
+                    "nass_offfarm": nass_sto / 1e6,
+                    "wcmd": wcmd_sto / 1e6,
+                    "ratio": nass_sto / total_s if total_s > 0 else None,
+                })
+
+            hist_df = pd.DataFrame(hist_rows).sort_values("year", ascending=False)
+
+            fig_hist = go.Figure()
+            for comm_key, col_h, color in [
+                ("Corn & Sorg Supply", "corn_sorg", COMM_COLORS_SVC["CORN+SORGHUM"]),
+                ("Soybean Supply",     "soybeans",  COMM_COLORS_SVC["SOYBEANS"]),
+                ("Wheat Supply",       "wheat",     COMM_COLORS_SVC["WHEAT"]),
+                ("Oat Supply",         "oats",      COMM_COLORS_SVC["OATS"]),
+            ]:
+                fig_hist.add_trace(go.Bar(
+                    name=comm_key,
+                    x=hist_df["year"].astype(str),
+                    y=hist_df[col_h],
+                    marker_color=color,
+                    hovertemplate=f"{comm_key}: %{{y:,.0f}}M bu<extra></extra>",
                 ))
-            if "nass_onfarm_bu" in top_n.columns:
-                fig_state.add_trace(go.Bar(
-                    name="On-Farm (NASS)", x=top_n["nass_onfarm_bu"] / 1e9, y=top_n["state"],
-                    orientation="h", marker_color="#a3e635",
-                    hovertemplate="On-Farm NASS: %{x:.2f}B bu<extra></extra>",
-                ))
-            fig_state.update_layout(
+
+            fig_hist.add_trace(go.Scatter(
+                name="NASS Off-Farm Storage",
+                x=hist_df["year"].astype(str),
+                y=hist_df["nass_offfarm"],
+                mode="lines+markers",
+                line=dict(color="#e0e0e0", width=2.5),
+                marker=dict(color="#e0e0e0", size=6),
+                hovertemplate="NASS Off-Farm: %{y:,.0f}M bu<extra></extra>",
+            ))
+
+            # Ratio annotations
+            hist_anns = []
+            for _, row in hist_df.iterrows():
+                if pd.notna(row["ratio"]):
+                    hist_anns.append(dict(
+                        x=str(int(row["year"])),
+                        y=row["total_supply"] * 1.04,
+                        text=f"{row['ratio']:.2f}",
+                        showarrow=False,
+                        font=dict(size=9, color="#94a3b8"),
+                        yanchor="bottom",
+                    ))
+
+            fig_hist.update_layout(
                 paper_bgcolor=DARK, plot_bgcolor=SURFACE,
                 font=dict(color=TEXT, family="Arial"),
-                margin=dict(l=20, r=20, t=10, b=50),
-                height=560,
-                barmode="group",
+                margin=dict(l=60, r=20, t=30, b=50),
+                height=460,
+                barmode="stack",
+                showlegend=True,
                 legend=dict(
                     font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
                     orientation="h", yanchor="bottom", y=1.02, x=0,
                 ),
-                xaxis=dict(
-                    title="Billion Bushels", gridcolor=BORDER,
-                    tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
+                xaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER, categoryorder="array",
+                           categoryarray=hist_df["year"].astype(str).tolist()),
+                yaxis=dict(
+                    title="Million Bushels",
+                    gridcolor=BORDER, tickfont=dict(color=MUTED),
+                    title_font=dict(color=MUTED),
                 ),
-                yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
-                hovermode="y unified",
+                annotations=hist_anns,
+                hovermode="x unified",
             )
-            _chart(fig_state, use_container_width=True, config={"displayModeBar": False})
+            _chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
 
-            # ── NASS capacity trend (national, on-farm vs off-farm) ────────────
-            if nass_cap_df is not None:
-                st.markdown(
-                    f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:24px;'>National Storage Capacity Trend (On-Farm vs Off-Farm)</h4>",
-                    unsafe_allow_html=True,
-                )
-                nat_trend = nass_cap_df.groupby(["year","short_desc"])["value_bu"].sum().reset_index()
-                nat_trend = nat_trend[nat_trend["value_bu"] > 0]
-                TREND_MAP = {
-                    "GRAIN STORAGE CAPACITY, OFF FARM - CAPACITY, MEASURED IN BU": ("Off-Farm", "#f97316"),
-                    "GRAIN STORAGE CAPACITY, ON FARM - CAPACITY, MEASURED IN BU":  ("On-Farm / Temp", "#a3e635"),
-                }
-                fig_trend = go.Figure()
-                for desc, (label, color) in TREND_MAP.items():
-                    sub = nat_trend[nat_trend["short_desc"] == desc].sort_values("year")
-                    fig_trend.add_trace(go.Scatter(
-                        x=sub["year"].astype(int), y=sub["value_bu"] / 1e9,
-                        mode="lines+markers", name=label,
-                        line=dict(color=color, width=2),
-                        marker=dict(color=color, size=5),
-                        hovertemplate=f"{label}: %{{y:.2f}}B bu<extra></extra>",
-                    ))
-                fig_trend.update_layout(
-                    paper_bgcolor=DARK, plot_bgcolor=SURFACE,
-                    font=dict(color=TEXT, family="Arial"),
-                    margin=dict(l=60, r=20, t=10, b=50),
-                    height=300,
-                    legend=dict(
-                        font=dict(color=TEXT), bgcolor="rgba(0,0,0,0)",
-                        orientation="h", yanchor="bottom", y=1.02, x=0,
-                    ),
-                    xaxis=dict(
-                        title="Year", gridcolor=BORDER, tickfont=dict(color=MUTED),
-                        title_font=dict(color=MUTED), dtick=2,
-                    ),
-                    yaxis=dict(
-                        title="Billion Bushels", gridcolor=BORDER,
-                        tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
-                    ),
-                    hovermode="x unified",
-                )
-                _chart(fig_trend, use_container_width=True, config={"displayModeBar": False})
-
-            # ── State comparison table ────────────────────────────────────────
+            # ── State detail table ─────────────────────────────────────────────
             st.markdown(
-                f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:24px;'>State Comparison Table</h4>",
+                f"<h4 style='color:{ACCENT};margin-bottom:4px;margin-top:20px;'>State Detail — {yr_svc}</h4>",
                 unsafe_allow_html=True,
             )
-            tbl = cmp.copy().sort_values("production_bu", ascending=False)
-            def _bu(v):
-                return f"{v:,.0f}" if pd.notna(v) and v > 0 else "—"
-            def _pct(num, den):
-                return tbl.apply(
-                    lambda r: f"{r[num]/r[den]*100:.0f}%" if pd.notna(r.get(num)) and pd.notna(r.get(den)) and r.get(den, 0) > 0 else "—",
-                    axis=1,
-                )
-            tbl_disp = pd.DataFrame({
-                "State":                   tbl["state"],
-                f"Production {yr} (bu)":   tbl["production_bu"].map(_bu),
-                "Corn Silage (tons)":      tbl["silage_tons"].map(_bu) if "silage_tons" in tbl.columns else "—",
-                "Sep 1 Stocks (bu)":       tbl["sep1_stocks_bu"].map(_bu),
-                "WCMD Licensed (bu)":      tbl["wcmd_licensed_bu"].map(_bu),
-                "Off-Farm NASS (bu)":      tbl["nass_offfarm_bu"].map(_bu) if "nass_offfarm_bu" in tbl else "—",
-                "On-Farm NASS (bu)":       tbl["nass_onfarm_bu"].map(_bu)  if "nass_onfarm_bu"  in tbl else "—",
-                "Licensed/Prod":           _pct("wcmd_licensed_bu", "production_bu"),
-                "Licensed/Stocks":         _pct("wcmd_licensed_bu", "sep1_stocks_bu"),
-                "TotalCap/Prod":           tbl.apply(
-                    lambda r: f"{(r.get('nass_offfarm_bu',0) + r.get('nass_onfarm_bu',0)) / r['production_bu']*100:.0f}%"
-                    if pd.notna(r.get("nass_offfarm_bu")) and r["production_bu"] > 0 else "—", axis=1
-                ),
+            tbl_svc = df_chart.copy().sort_values("total_supply_bu", ascending=False)
+            ratio_prev_col = tbl_svc["state"].map(ratio_prev_map)
+            tbl_disp_svc = pd.DataFrame({
+                "State":                tbl_svc["state"],
+                "Corn & Sorg (M bu)":   (tbl_svc["corn_sorg_bu"] / 1e6).map(lambda v: f"{v:,.0f}"),
+                "Soybeans (M bu)":      (tbl_svc["soybeans_bu"]  / 1e6).map(lambda v: f"{v:,.0f}"),
+                "Wheat (M bu)":         (tbl_svc["wheat_bu"]     / 1e6).map(lambda v: f"{v:,.0f}"),
+                "Oats (M bu)":          (tbl_svc["oats_bu"]      / 1e6).map(lambda v: f"{v:,.0f}"),
+                "Total Supply (M bu)":  (tbl_svc["total_supply_bu"] / 1e6).map(lambda v: f"{v:,.0f}"),
+                "Storage (M bu)":       (tbl_svc["storage_bu"]   / 1e6).map(lambda v: f"{v:,.0f}" if v > 0 else "—"),
+                "Surplus/(Deficit)":    ((tbl_svc["storage_bu"] - tbl_svc["total_supply_bu"]) / 1e6).map(lambda v: f"{v:+,.0f}"),
+                f"Ratio {yr_svc}":      tbl_svc["ratio"].map(lambda v: f"{v:.2f}" if pd.notna(v) else "—"),
+                f"Ratio {yr_prev}":     ratio_prev_col.map(lambda v: f"{v:.2f}" if pd.notna(v) else "—"),
+                "YoY Δ Ratio":          (tbl_svc["ratio"] - ratio_prev_col).map(lambda v: f"{v:+.2f}" if pd.notna(v) else "—"),
             })
-            st.dataframe(tbl_disp, use_container_width=True, hide_index=True)
+            st.dataframe(tbl_disp_svc, use_container_width=True, hide_index=True)
             st.markdown(
-                f"<p style='color:{MUTED};font-size:0.78rem;margin-top:4px;'>"
-                "Production = corn + soybeans + wheat + oats + sorghum (NASS final annual). "
-                "Sep 1 Stocks: USDA NASS Grain Stocks report. "
-                "WCMD Licensed: USDA FSA federally licensed grain warehouses. "
-                f"On-Farm / Off-Farm capacity: USDA NASS Grain Storage Capacity survey ({nass_yr_label}).</p>",
+                f"<p style='color:{MUTED};font-size:0.77rem;margin-top:4px;'>"
+                f"Supply = annual production (corn+sorghum, soybeans, wheat, oats). "
+                f"Storage layer: {storage_layer} (USDA FSA WCMD / USDA NASS Grain Storage Capacity). "
+                "Ratio = Storage ÷ Supply; values &lt; 1.00 indicate a space deficit.</p>",
                 unsafe_allow_html=True,
             )
 
