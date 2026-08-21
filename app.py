@@ -3675,7 +3675,7 @@ def main():
         geo        = load_geojson()
         fips_lk    = build_fips_lookup(geo)
         centroids  = build_centroid_lookup(geo)
-        logo_50yr  = load_logo(LOGO_50YR)
+        logo_50yr  = load_logo(LOGO_TRANS)
         logo_trans = load_logo(LOGO_TRANS)
         logo_full  = load_logo(LOGO_FULL)
 
@@ -7645,10 +7645,10 @@ def main():
             # Total Storage line overlay
             _svc_line_color = {
                 "WCMD Licensed":       "#f59e0b",
-                "NASS Off-Farm":       "#e0e0e0",
-                "NASS On-Farm":        "#60a5fa",
-                "NASS Total (On+Off)": "#e0e0e0",
-            }.get(storage_layer, "#e0e0e0")
+                "NASS Off-Farm":       "#1e2e22",
+                "NASS On-Farm":        "#1477cc",
+                "NASS Total (On+Off)": "#1e2e22",
+            }.get(storage_layer, "#1e2e22")
             fig_svc.add_trace(go.Scatter(
                 name=storage_layer,
                 x=df_chart["state"],
