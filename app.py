@@ -7,6 +7,7 @@ import urllib.request
 import urllib.parse
 import numpy as np
 import base64
+import datetime
 from pathlib import Path
 from PIL import Image
 import geopandas as gpd
@@ -14,11 +15,11 @@ from shapely.geometry import shape
 
 _HERE = Path(__file__).parent
 st.set_page_config(
-    page_title="USDA County & ASD Production Dashboard",
+    page_title="JSA Agricultural Intelligence Dashboard",
     page_icon=Image.open(_HERE / "assets" / "Transparent Smal logo.png"),
     layout="wide",
 )
-_CACHE_VERSION = "v16"  # bump to invalidate all @st.cache_data on deploy
+_CACHE_VERSION = "v21"  # bump to invalidate all @st.cache_data on deploy
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 HERE       = Path(__file__).parent
@@ -178,6 +179,408 @@ _LIVESTOCK_POULTRY: set = {
 }
 _LIVESTOCK_YEARS: list = list(range(2025, 2011, -1))
 
+_AQUA_SPECIES: dict = {
+    # NASS Census of Aquaculture taxonomy (group_desc=AQUACULTURE, statisticcat=SALES & DISTRIBUTION)
+    "All Aquaculture":  {"commodity_desc": "AQUACULTURE TOTALS"},
+    "Food Fish":        {"commodity_desc": "FOOD FISH"},
+    "Catfish":          {"commodity_desc": "FOOD FISH",  "class_desc": "CATFISH"},
+    "Trout":            {"commodity_desc": "FOOD FISH",  "class_desc": "TROUT"},
+    "Crustaceans":      {"commodity_desc": "CRUSTACEANS"},
+    "Mollusks":         {"commodity_desc": "MOLLUSKS"},
+    "Sport Fish":       {"commodity_desc": "SPORT FISH"},
+    "Ornamental Fish":  {"commodity_desc": "ORNAMENTAL FISH"},
+    "Baitfish":         {"commodity_desc": "BAITFISH"},
+}
+_AQUA_YEARS: list = [2022, 2017, 2012, 2007]
+_ECHO_AQUA_URL = (
+    "https://echodata.epa.gov/echo/cwa_rest_services.get_facilities"
+    "?output=JSON&p_sic=0921,0273&p_act=Y&p_limit=10000"
+)
+
+_CORN_PLANTS = [
+    {'co': 'Pinal Energy', 'st': 'AZ', 'city': 'Casa Grande', 'county': 'Pinal', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 19643000, 'start_yr': 2007, 'lat': 32.8773, 'lon': -111.7537},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'CA', 'city': 'Calipatria', 'county': 'Imperial', 'status': 'Hold', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 17857000, 'start_yr': 0, 'lat': 33.1256, 'lon': -115.514},
+    {'co': 'AltraBiofuels Phoenix Bio Industries, LLC', 'st': 'CA', 'city': 'Goshen', 'county': 'Tulare', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 31500000, 'corn_bu': 11250000, 'start_yr': 2005, 'lat': 36.3526, 'lon': -119.4258},
+    {'co': 'Aemetis', 'st': 'CA', 'city': 'Keyes', 'county': 'Stanislaus', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 65900000, 'corn_bu': None, 'start_yr': 2008, 'lat': 37.5605, 'lon': -120.9072},
+    {'co': 'Azteca Milling(Gruma)', 'st': 'CA', 'city': 'Madera', 'county': 'Madera', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 9450000, 'start_yr': 1996, 'lat': 37.1716, 'lon': -119.7738},
+    {'co': 'Madera Renewable Energy One', 'st': 'CA', 'city': 'Madera', 'county': 'Madera', 'status': 'Hold', 'cls': 'Ethanol', 'typ': 'Cellulosic', 'eth_gal': None, 'corn_bu': None, 'start_yr': None, 'lat': 37.1716, 'lon': -119.7738},
+    {'co': 'Seaboard Energy California, LLC', 'st': 'CA', 'city': 'Madera', 'county': 'Madera', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 40000000, 'corn_bu': 14286000, 'start_yr': 2006, 'lat': 37.1716, 'lon': -119.7738},
+    {'co': 'Calgren Renewable Fuels, LLC', 'st': 'CA', 'city': 'Pixley', 'county': 'Tulare', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 58000000, 'corn_bu': 20714000, 'start_yr': 2008, 'lat': 35.9788, 'lon': -119.2948},
+    {'co': 'Parallel Products Inc', 'st': 'CA', 'city': 'Rancho Cucamonga', 'county': 'San Bernardino', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 3000000, 'corn_bu': None, 'start_yr': None, 'lat': 34.1064, 'lon': -117.5931},
+    {'co': 'Aemetis', 'st': 'CA', 'city': 'Riverbank', 'county': 'Stanislaus', 'status': 'Repurposed', 'cls': 'SAF/Renewable Diesel', 'typ': 'Cellulosic', 'eth_gal': None, 'corn_bu': None, 'start_yr': None, 'lat': 37.7308, 'lon': -120.9353},
+    {'co': 'Ingredion Inc.', 'st': 'CA', 'city': 'Stockton', 'county': 'San Joaquin', 'status': 'Idled', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 8050000, 'start_yr': 1980, 'lat': 37.9577, 'lon': -121.2908},
+    {'co': 'Pelican Acquisition LLC', 'st': 'CA', 'city': 'Stockton', 'county': 'San Joaquin', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2008, 'lat': 37.9577, 'lon': -121.2908},
+    {'co': 'MillerCoors/Merrick & Company', 'st': 'CO', 'city': 'Golden', 'county': 'Jefferson', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 2000000, 'corn_bu': None, 'start_yr': 1996, 'lat': 39.7555, 'lon': -105.2211},
+    {'co': 'A.L. Gilbert Company (Colorado Sweet Gold)', 'st': 'CO', 'city': 'Johnstown', 'county': 'Weld', 'status': 'Closed', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 3150000, 'start_yr': 1983, 'lat': 40.337, 'lon': -104.913},
+    {'co': 'Sterling Ethanol, LLC', 'st': 'CO', 'city': 'Sterling', 'county': 'Logan', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 19666000, 'start_yr': 2005, 'lat': 40.6255, 'lon': -103.2077},
+    {'co': 'Front Range Energy, LLC', 'st': 'CO', 'city': 'Windsor', 'county': 'Weld', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 48000000, 'corn_bu': 17143000, 'start_yr': 2006, 'lat': 40.4775, 'lon': -104.901},
+    {'co': 'Yuma Ethanol', 'st': 'CO', 'city': 'Yuma', 'county': 'Yuma', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 19666000, 'start_yr': 2007, 'lat': 40.1247, 'lon': -102.7238},
+    {'co': 'U.N.O.I. Grain Mill', 'st': 'DE', 'city': 'Seaford', 'county': 'Sussex', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1060000, 'start_yr': 2008, 'lat': 38.6395, 'lon': -75.611},
+    {'co': 'Frankens Energy LLC', 'st': 'FL', 'city': 'Vero Beach', 'county': 'Indian River', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Cellulosic', 'eth_gal': 8000000, 'corn_bu': None, 'start_yr': 2012, 'lat': 27.6386, 'lon': -80.3973},
+    {'co': 'Alltech Baconton', 'st': 'GA', 'city': 'Baconton', 'county': 'Mitchell', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 500000, 'corn_bu': None, 'start_yr': 1988, 'lat': 31.3735, 'lon': -84.1427},
+    {'co': 'POET (formerly Flint Hills Resources LP)', 'st': 'GA', 'city': 'Camilla', 'county': 'Mitchell', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 120000000, 'corn_bu': 10169500, 'start_yr': 2008, 'lat': 31.231, 'lon': -84.2107},
+    {'co': 'Synergy Solutions Crisp County', 'st': 'GA', 'city': 'Cordele', 'county': 'Crisp', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 4000000, 'corn_bu': None, 'start_yr': 2015, 'lat': 31.9638, 'lon': -83.7827},
+    {'co': 'Southeastern Mills, Inc.', 'st': 'GA', 'city': 'Rome', 'county': 'Floyd', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1650000, 'start_yr': 1947, 'lat': 34.257, 'lon': -85.1647},
+    {'co': 'LanzaTech Freedom Pines Fuels LLC', 'st': 'GA', 'city': 'Soperton', 'county': 'Treutlen', 'status': 'Run', 'cls': 'SAF/Renewable Diesel', 'typ': 'ATJ', 'eth_gal': None, 'corn_bu': None, 'start_yr': None, 'lat': 32.3763, 'lon': -82.5954},
+    {'co': 'Valero Renewable Fuels', 'st': 'IA', 'city': 'Albert City', 'county': 'Buena Vista', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 135000000, 'corn_bu': 47000000, 'start_yr': 2006, 'lat': 42.7794, 'lon': -94.9622},
+    {'co': 'POET Biorefining (formerly Flint Hills Resources LP)', 'st': 'IA', 'city': 'Arthur', 'county': 'Ida', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 132000000, 'corn_bu': 44746000, 'start_yr': 2008, 'lat': 41.9847, 'lon': -95.34},
+    {'co': 'POET Biorefining (Otter Creek Ethanol)', 'st': 'IA', 'city': 'Ashton', 'county': 'Osceola', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 68000000, 'corn_bu': 24286000, 'start_yr': 2004, 'lat': 43.313, 'lon': -95.7816},
+    {'co': 'Elite Octane', 'st': 'IA', 'city': 'Atlantic', 'county': 'Cass', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 175000000, 'corn_bu': 58333000, 'start_yr': 2018, 'lat': 41.403, 'lon': -95.0152},
+    {'co': 'Archer Daniels Midland', 'st': 'IA', 'city': 'Cedar Rapids', 'county': 'Linn', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 240000000, 'corn_bu': 60600000, 'start_yr': 1971, 'lat': 42.0084, 'lon': -91.6441},
+    {'co': 'Cargill Inc.', 'st': 'IA', 'city': 'Cedar Rapids', 'county': 'Linn', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 31500000, 'start_yr': 1968, 'lat': 42.0084, 'lon': -91.6441},
+    {'co': 'Ingredion, Inc.', 'st': 'IA', 'city': 'Cedar Rapids', 'county': 'Linn', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 17750000, 'start_yr': 1899, 'lat': 42.0084, 'lon': -91.6441},
+    {'co': 'Quaker Foods', 'st': 'IA', 'city': 'Cedar Rapids', 'county': 'Linn', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 9360000, 'start_yr': 1873, 'lat': 42.0084, 'lon': -91.6441},
+    {'co': 'Vantage Corn Processors (Archer Daniels Midland)', 'st': 'IA', 'city': 'Cedar Rapids', 'county': 'Linn', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 300000000, 'corn_bu': 72400000, 'start_yr': 2010, 'lat': 42.0084, 'lon': -91.6441},
+    {'co': 'Valero Renewable Fuels', 'st': 'IA', 'city': 'Charles City', 'county': 'Floyd', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 49000000, 'start_yr': 2007, 'lat': 43.0666, 'lon': -92.6722},
+    {'co': 'Archer Daniels Midland', 'st': 'IA', 'city': 'Clinton', 'county': 'Clinton', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 237000000, 'corn_bu': 78000000, 'start_yr': 1982, 'lat': 41.8447, 'lon': -90.1887},
+    {'co': 'POET Biorefining (Tall Corn Ethanol Co-op)', 'st': 'IA', 'city': 'Coon Rapids', 'county': 'Carroll', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 65000000, 'corn_bu': 23214000, 'start_yr': 2002, 'lat': 41.8741, 'lon': -94.6808},
+    {'co': 'POET Biorefining', 'st': 'IA', 'city': 'Corning', 'county': 'Adams', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 31846000, 'start_yr': 2007, 'lat': 40.9908, 'lon': -94.7375},
+    {'co': 'Southwest Iowa Renewable Energy, LLC', 'st': 'IA', 'city': 'Council Bluffs', 'county': 'Pottawattamie', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 43430000, 'start_yr': 2009, 'lat': 41.2619, 'lon': -95.8608},
+    {'co': 'The Andersons Marathon Holdings LLC', 'st': 'IA', 'city': 'Denison', 'county': 'Crawford', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': None, 'start_yr': 2005, 'lat': 42.0178, 'lon': -95.3553},
+    {'co': 'Big River United Energy', 'st': 'IA', 'city': 'Dyersville', 'county': 'Dubuque', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 50000000, 'start_yr': 2008, 'lat': 42.4845, 'lon': -91.1211},
+    {'co': 'Cargill Inc.', 'st': 'IA', 'city': 'Eddyville', 'county': 'Wapello', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 71000000, 'corn_bu': 43750000, 'start_yr': 1985, 'lat': 41.1562, 'lon': -92.6382},
+    {'co': 'POET Biorefining (Voyager Ethanol)', 'st': 'IA', 'city': 'Emmetsburg', 'county': 'Palo Alto', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 68000000, 'corn_bu': 23491000, 'start_yr': 2005, 'lat': 43.1108, 'lon': -94.6782},
+    {'co': 'POET-DSM Advanced Biofuel, LLC', 'st': 'IA', 'city': 'Emmetsburg', 'county': 'Palo Alto', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Cellulosic', 'eth_gal': 20000000, 'corn_bu': None, 'start_yr': 2014, 'lat': 43.1108, 'lon': -94.6782},
+    {'co': 'POET Biorefining (formerly Flint Hills Resources LP)', 'st': 'IA', 'city': 'Fairbank', 'county': 'Buchanan', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 132000000, 'corn_bu': 44746000, 'start_yr': 2006, 'lat': 42.6392, 'lon': -92.0489},
+    {'co': 'Cargill Inc.', 'st': 'IA', 'city': 'Fort Dodge', 'county': 'Webster', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 115000000, 'corn_bu': 54000000, 'start_yr': 2013, 'lat': 42.5044, 'lon': -94.191},
+    {'co': 'Valero Renewable Fuels', 'st': 'IA', 'city': 'Fort Dodge', 'county': 'Webster', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 49000000, 'start_yr': 2005, 'lat': 42.5044, 'lon': -94.191},
+    {'co': 'Quad-County Corn Processors', 'st': 'IA', 'city': 'Galva', 'county': 'Ida', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 37000000, 'corn_bu': 12500000, 'start_yr': 2002, 'lat': 42.5069, 'lon': -95.4172},
+    {'co': 'Iowa Corn Processors LC', 'st': 'IA', 'city': 'Glidden', 'county': 'Carroll', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 7350000, 'start_yr': 2005, 'lat': 42.0569, 'lon': -94.7289},
+    {'co': 'Corn, LP', 'st': 'IA', 'city': 'Goldfield', 'county': 'Wright', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 75000000, 'corn_bu': 25000000, 'start_yr': 2005, 'lat': 42.7355, 'lon': -93.9198},
+    {'co': 'POET Biorefining', 'st': 'IA', 'city': 'Gowrie', 'county': 'Webster', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 31304000, 'start_yr': 2006, 'lat': 42.2807, 'lon': -94.2911},
+    {'co': 'Louis Dreyfus Commodities', 'st': 'IA', 'city': 'Grand Junction', 'county': 'Greene', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 122000000, 'corn_bu': 43571000, 'start_yr': 2009, 'lat': 42.0389, 'lon': -94.2361},
+    {'co': 'POET Biorefining', 'st': 'IA', 'city': 'Hanlontown', 'county': 'Worth', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80000000, 'corn_bu': 28571000, 'start_yr': 2004, 'lat': 43.2863, 'lon': -93.3583},
+    {'co': 'Valero Renewable Fuels', 'st': 'IA', 'city': 'Hartley', 'county': 'Clay', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 49000000, 'start_yr': 2008, 'lat': 43.1791, 'lon': -95.4744},
+    {'co': 'POET Biorefining (formerly Flint Hills Resources LP)', 'st': 'IA', 'city': 'Iowa Falls', 'county': 'Hardin', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 112000000, 'corn_bu': 37966000, 'start_yr': 2004, 'lat': 42.5224, 'lon': -93.2613},
+    {'co': 'POET Biorefining', 'st': 'IA', 'city': 'Jewell', 'county': 'Hamilton', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 31304000, 'start_yr': 2006, 'lat': 42.3096, 'lon': -93.6388},
+    {'co': 'Roquette', 'st': 'IA', 'city': 'Keokuk', 'county': 'Lee', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 36400000, 'start_yr': 1991, 'lat': 40.3984, 'lon': -91.3848},
+    {'co': 'Valero Renewable Fuels', 'st': 'IA', 'city': 'Lakota', 'county': 'Kossuth', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 110000000, 'corn_bu': 38000000, 'start_yr': 2002, 'lat': 43.3774, 'lon': -94.0963},
+    {'co': 'Homeland Energy Solutions', 'st': 'IA', 'city': 'Lawler', 'county': 'Chickasaw', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 200000000, 'corn_bu': 66000000, 'start_yr': 2009, 'lat': 43.0949, 'lon': -92.1577},
+    {'co': 'Little Sioux Corn Processors, LP', 'st': 'IA', 'city': 'Marcus', 'county': 'Cherokee', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 165000000, 'corn_bu': 56897000, 'start_yr': 2003, 'lat': 42.8272, 'lon': -95.8075},
+    {'co': 'Golden Grain Energy, LLC', 'st': 'IA', 'city': 'Mason City', 'county': 'Cerro Gordo', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 120000000, 'corn_bu': 42857000, 'start_yr': 2004, 'lat': 43.1536, 'lon': -93.201},
+    {'co': 'New Energy Freedom', 'st': 'IA', 'city': 'Mason City', 'county': 'Stutsman', 'status': 'Build', 'cls': 'Ethanol/Ethylene', 'typ': 'Cellulosic', 'eth_gal': None, 'corn_bu': None, 'start_yr': None, 'lat': 43.1536, 'lon': -93.201},
+    {'co': 'POET Biorefining (formerly Flint Hills Resources LP)', 'st': 'IA', 'city': 'Menlo', 'county': 'Guthrie', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 132000000, 'corn_bu': 44746000, 'start_yr': 2008, 'lat': 41.5188, 'lon': -94.3969},
+    {'co': 'Plymouth Energy, LLC', 'st': 'IA', 'city': 'Merrill', 'county': 'Plymouth', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 18500000, 'start_yr': 2008, 'lat': 42.7219, 'lon': -96.2452},
+    {'co': 'Grain Processing Corp.', 'st': 'IA', 'city': 'Muscatine', 'county': 'Muscatine', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 83000000, 'corn_bu': 60000000, 'start_yr': 2002, 'lat': 41.4245, 'lon': -91.0429},
+    {'co': 'Lincolnway Energy, LLC', 'st': 'IA', 'city': 'Nevada', 'county': 'Story', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2006, 'lat': 42.0225, 'lon': -93.4541},
+    {'co': 'Verbio North America Corp', 'st': 'IA', 'city': 'Nevada', 'county': 'Story', 'status': 'Expand', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 20000000, 'start_yr': 2015, 'lat': 42.0225, 'lon': -93.4541},
+    {'co': 'POET Biorefining (formerly Flint Hills Resources LP)', 'st': 'IA', 'city': 'Shell Rock', 'county': 'Butler', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 128000000, 'corn_bu': 43390000, 'start_yr': 2008, 'lat': 42.7088, 'lon': -92.5838},
+    {'co': 'Green Plains Renewable Energy', 'st': 'IA', 'city': 'Shenandoah', 'county': 'Page', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 82000000, 'corn_bu': 28258000, 'start_yr': 2007, 'lat': 40.7659, 'lon': -95.3733},
+    {'co': 'Siouxland Energy & Livestock Coop', 'st': 'IA', 'city': 'Sioux Center', 'county': 'Sioux', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 31428600, 'start_yr': 2001, 'lat': 43.0791, 'lon': -96.1756},
+    {'co': 'Absolute Energy, LLC', 'st': 'IA', 'city': 'St. Ansgar', 'county': 'Mitchell', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 46429000, 'start_yr': 2008, 'lat': 43.378, 'lon': -92.9183},
+    {'co': 'Pine Lake Corn Processors, LLC', 'st': 'IA', 'city': 'Steamboat Rock', 'county': 'Hardin', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80700000, 'corn_bu': 26990000, 'start_yr': 2005, 'lat': 42.5225, 'lon': -93.0641},
+    {'co': 'Green Plains Renewable Energy', 'st': 'IA', 'city': 'Superior', 'county': 'Dickinson', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2008, 'lat': 43.4477, 'lon': -95.1378},
+    {'co': 'Big River Resources West Burlington, LLC', 'st': 'IA', 'city': 'West Burlington', 'county': 'Des Moines', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 46429000, 'start_yr': 2004, 'lat': 40.8211, 'lon': -91.165},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'ID', 'city': 'Burley', 'county': 'Cassia', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 61000000, 'corn_bu': 21786000, 'start_yr': 2008, 'lat': 42.5352, 'lon': -113.7924},
+    {'co': 'Wyoming Ethanol', 'st': 'ID', 'city': 'Heyburn', 'county': 'Minidoka', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 20000000, 'corn_bu': 7143000, 'start_yr': 0, 'lat': 42.5583, 'lon': -113.7729},
+    {'co': 'CHS Inc. (Patriot Renewable Fuels LLC)', 'st': 'IL', 'city': 'Annawan', 'county': 'Henry', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 46429000, 'start_yr': 2008, 'lat': 41.39, 'lon': -89.899},
+    {'co': 'Ingredion Inc.', 'st': 'IL', 'city': 'Bedford Park', 'county': 'Cook', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 43750000, 'start_yr': 1910, 'lat': 41.7614, 'lon': -87.8575},
+    {'co': 'Mano Metate Grain & Energy Commodities Plant', 'st': 'IL', 'city': 'Benton', 'county': 'Franklin', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 7000000, 'corn_bu': 2500000, 'start_yr': 2009, 'lat': 37.9967, 'lon': -88.9203},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'IL', 'city': 'Canton', 'county': 'Fulton', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 37000000, 'corn_bu': 13214000, 'start_yr': 2007, 'lat': 40.5589, 'lon': -90.0318},
+    {'co': 'Bunge Milling & Danville Milling', 'st': 'IL', 'city': 'Danville', 'county': 'Vermilion', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 93000000, 'start_yr': 1979, 'lat': 40.1245, 'lon': -87.63},
+    {'co': 'Archer Daniels Midland', 'st': 'IL', 'city': 'Decatur', 'county': 'Macon', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 375000000, 'corn_bu': 125000000, 'start_yr': 1967, 'lat': 39.8403, 'lon': -88.9548},
+    {'co': 'Tate & Lyle North Amer.', 'st': 'IL', 'city': 'Decatur', 'county': 'Macon', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 50000000, 'start_yr': 1989, 'lat': 39.8403, 'lon': -88.9548},
+    {'co': 'Big River Resources Galva, LLC', 'st': 'IL', 'city': 'Galva', 'county': 'Henry', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 128800000, 'corn_bu': 46000000, 'start_yr': 2009, 'lat': 41.1648, 'lon': -90.0426},
+    {'co': 'One Earth Energy', 'st': 'IL', 'city': 'Gibson City', 'county': 'Ford', 'status': 'Expand', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 175000000, 'corn_bu': 60000000, 'start_yr': 2009, 'lat': 40.4586, 'lon': -88.3595},
+    {'co': 'Marquis Energy, LLC', 'st': 'IL', 'city': 'Hennepin', 'county': 'Putnam', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 395000000, 'corn_bu': 132107000, 'start_yr': 2008, 'lat': 41.2542, 'lon': -89.3493},
+    {'co': 'Marquis Sustainable Aviation Fuel', 'st': 'IL', 'city': 'Hennepin', 'county': 'Putnam', 'status': 'Proposed', 'cls': 'SAF/Renewable Diesel', 'typ': 'ATJ', 'eth_gal': None, 'corn_bu': 66666666, 'start_yr': None, 'lat': 41.2542, 'lon': -89.3493},
+    {'co': 'Bunge Milling', 'st': 'IL', 'city': 'Kankakee', 'county': 'Kankakee', 'status': 'Idled', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 16250000, 'start_yr': 1963, 'lat': 41.12, 'lon': -87.8612},
+    {'co': 'Adkins Energy, LLC', 'st': 'IL', 'city': 'Lena', 'county': 'Stephenson', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2002, 'lat': 42.3792, 'lon': -89.8218},
+    {'co': 'Green Plains Renewable Energy', 'st': 'IL', 'city': 'Madison', 'county': 'Madison', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 31015000, 'start_yr': 2010, 'lat': 38.6803, 'lon': -90.1512},
+    {'co': 'Lincolnland Agri-Energy, LLC', 'st': 'IL', 'city': 'Palestine', 'county': 'Crawford', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 66000000, 'corn_bu': 23571000, 'start_yr': 2004, 'lat': 39.0011, 'lon': -87.6117},
+    {'co': 'Cargill Illinois Cereal Mills Div.', 'st': 'IL', 'city': 'Paris', 'county': 'Edgar', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 17500000, 'start_yr': 1934, 'lat': 39.6112, 'lon': -87.6967},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'IL', 'city': 'Pekin', 'county': 'Tazewell', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2007, 'lat': 40.5678, 'lon': -89.6498},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'IL', 'city': 'Pekin', 'county': 'Tazewell', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 100000000, 'corn_bu': 31429000, 'start_yr': 1981, 'lat': 40.5678, 'lon': -89.6498},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'IL', 'city': 'Pekin', 'county': 'Tazewell', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 1980, 'lat': 40.5678, 'lon': -89.6498},
+    {'co': 'BioUrja Group', 'st': 'IL', 'city': 'Peoria', 'county': 'Peoria', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 1980, 'lat': 40.6936, 'lon': -89.589},
+    {'co': 'CHS Inc. (Illinois River Energy LLC)', 'st': 'IL', 'city': 'Rochelle', 'county': 'Ogle', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 138000000, 'corn_bu': 49286000, 'start_yr': 2006, 'lat': 41.9231, 'lon': -89.0695},
+    {'co': 'Center Ethanol Company', 'st': 'IL', 'city': 'Sauget', 'county': 'St. Clair', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 54000000, 'corn_bu': 19286000, 'start_yr': 2008, 'lat': 38.5912, 'lon': -90.1576},
+    {'co': 'POET Biorefining', 'st': 'IN', 'city': 'Alexandria', 'county': 'Madison', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2008, 'lat': 40.2625, 'lon': -85.6775},
+    {'co': 'Valero Renewable Fuels', 'st': 'IN', 'city': 'Bluffton', 'county': 'Wells', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 135000000, 'corn_bu': 47000000, 'start_yr': 2008, 'lat': 40.7381, 'lon': -85.1722},
+    {'co': 'POET Biorefining', 'st': 'IN', 'city': 'Cloverdale', 'county': 'Putnam', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 92000000, 'corn_bu': 32857000, 'start_yr': 2011, 'lat': 39.5136, 'lon': -86.7941},
+    {'co': 'The Andersons Marathon Holdings LLC', 'st': 'IN', 'city': 'Clymers', 'county': 'Cass', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': None, 'start_yr': 2007, 'lat': 40.8203, 'lon': -86.1444},
+    {'co': 'Azteca Milling', 'st': 'IN', 'city': 'Evansville', 'county': 'Vanderburgh', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 9450000, 'start_yr': 1996, 'lat': 37.9748, 'lon': -87.5558},
+    {'co': 'Nunn Milling Co.', 'st': 'IN', 'city': 'Evansville', 'county': 'Vanderburgh', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3180000, 'start_yr': 1926, 'lat': 37.9748, 'lon': -87.5558},
+    {'co': 'Cargill Inc.', 'st': 'IN', 'city': 'Hammond', 'county': 'Lake', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 14350000, 'start_yr': 1908, 'lat': 41.5831, 'lon': -87.5001},
+    {'co': 'Cardinal Ethanol', 'st': 'IN', 'city': 'Harrisville', 'county': 'Randolph', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 135000000, 'corn_bu': 48214000, 'start_yr': 2008, 'lat': 40.3158, 'lon': -84.953},
+    {'co': 'Cargill Illinois Cereal Mills Div.', 'st': 'IN', 'city': 'Indianapolis', 'county': 'Marion', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 17500000, 'start_yr': 1976, 'lat': 39.7684, 'lon': -86.1581},
+    {'co': 'Ingredion Inc.', 'st': 'IN', 'city': 'Indianapolis', 'county': 'Marion', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 8750000, 'start_yr': 1939, 'lat': 39.7684, 'lon': -86.1581},
+    {'co': 'Tate & Lyle North Amer.', 'st': 'IN', 'city': 'Lafayette', 'county': 'Tippecanoe', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 25375000, 'start_yr': 1979, 'lat': 40.4191, 'lon': -86.8919},
+    {'co': 'MGPI of Indiana, LLC', 'st': 'IN', 'city': 'Lawrenceburg', 'county': 'Dearborn', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 35000000, 'corn_bu': 12500000, 'start_yr': 1847, 'lat': 39.0909, 'lon': -84.85},
+    {'co': 'Valero Renewable Fuels', 'st': 'IN', 'city': 'Linden', 'county': 'Montgomery', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 135000000, 'corn_bu': 47000000, 'start_yr': 2007, 'lat': 40.1881, 'lon': -86.9039},
+    {'co': 'Agricor Inc.', 'st': 'IN', 'city': 'Marion', 'county': 'Grant', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 8400000, 'start_yr': 1983, 'lat': 40.5584, 'lon': -85.6591},
+    {'co': 'Central Indiana Ethanol, LLC', 'st': 'IN', 'city': 'Marion', 'county': 'Grant', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2007, 'lat': 40.5584, 'lon': -85.6591},
+    {'co': 'Green Plains Renewable Energy', 'st': 'IN', 'city': 'Mount Vernon', 'county': 'Posey', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 31015000, 'start_yr': 2010, 'lat': 37.9318, 'lon': -87.8948},
+    {'co': 'Valero Renewable Fuels', 'st': 'IN', 'city': 'Mount Vernon', 'county': 'Posey', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 100000000, 'corn_bu': 35000000, 'start_yr': 2010, 'lat': 37.9318, 'lon': -87.8948},
+    {'co': 'POET Biorefining', 'st': 'IN', 'city': 'North Manchester', 'county': 'Wabash', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2008, 'lat': 41.0006, 'lon': -85.7686},
+    {'co': 'POET Biorefining', 'st': 'IN', 'city': 'Portland', 'county': 'Jay', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2007, 'lat': 40.4342, 'lon': -84.9771},
+    {'co': 'Harvestone Iroquois Bio-Energy Company', 'st': 'IN', 'city': 'Rensselaer', 'county': 'Jasper', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2007, 'lat': 40.9364, 'lon': -87.1528},
+    {'co': 'Prairie Mills Products', 'st': 'IN', 'city': 'Rochester', 'county': 'Fulton', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3120000, 'start_yr': 1920, 'lat': 41.0664, 'lon': -86.2158},
+    {'co': 'POET Biorefining', 'st': 'IN', 'city': 'Shelbyville', 'county': 'Shelby', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 94000000, 'corn_bu': 33571000, 'start_yr': 2020, 'lat': 39.5214, 'lon': -85.7766},
+    {'co': 'Verbio North America Corp (formerly South Bend Ethanol, LLC)', 'st': 'IN', 'city': 'South Bend', 'county': 'St. Joseph', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 85000000, 'corn_bu': 28000000, 'start_yr': 1984, 'lat': 41.6764, 'lon': -86.252},
+    {'co': 'Grain Processing Corp.', 'st': 'IN', 'city': 'Washington', 'county': 'Daviess', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 37000000, 'corn_bu': 36000000, 'start_yr': 1997, 'lat': 38.6592, 'lon': -87.1722},
+    {'co': 'Bunge Milling', 'st': 'KS', 'city': 'Atchison', 'county': 'Atchison', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 18000000, 'start_yr': 1950, 'lat': 39.5631, 'lon': -95.1216},
+    {'co': 'MGPI Processing, Inc.', 'st': 'KS', 'city': 'Atchison', 'county': 'Atchison', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 25000000, 'corn_bu': 8929000, 'start_yr': 1941, 'lat': 39.5631, 'lon': -95.1216},
+    {'co': 'Cereal Food Processors Inc.', 'st': 'KS', 'city': 'Bonner Springs', 'county': 'Wyandotte', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3400000, 'start_yr': 1989, 'lat': 39.0595, 'lon': -94.8858},
+    {'co': 'Western Plains Energy, LLC', 'st': 'KS', 'city': 'Campus', 'county': 'Logan', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 52000000, 'corn_bu': 18571000, 'start_yr': 2004, 'lat': 38.9584, 'lon': -99.083},
+    {'co': 'Cardinal Colwich LLC (formerly Element-ICM/Andersons)', 'st': 'KS', 'city': 'Colwich', 'county': 'Sedgwick', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 70000000, 'corn_bu': 25000000, 'start_yr': 2019, 'lat': 37.7786, 'lon': -97.5339},
+    {'co': 'Bonanza BioEnergy, LLC', 'st': 'KS', 'city': 'Garden City', 'county': 'Finney', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 62000000, 'corn_bu': 22143000, 'start_yr': 2007, 'lat': 37.9717, 'lon': -100.8726},
+    {'co': 'Reeve Agri-Energy, Inc.', 'st': 'KS', 'city': 'Garden City', 'county': 'Finney', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 13000000, 'corn_bu': 4643000, 'start_yr': 2005, 'lat': 37.9717, 'lon': -100.8726},
+    {'co': 'East Kansas Agri - Energy, LLC', 'st': 'KS', 'city': 'Garnett', 'county': 'Anderson', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 48000000, 'corn_bu': 17143000, 'start_yr': 2005, 'lat': 38.2808, 'lon': -95.2433},
+    {'co': 'E Caruso LLC', 'st': 'KS', 'city': 'Goodland', 'county': 'Sherman', 'status': 'Hold', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 20000000, 'corn_bu': 7143000, 'start_yr': 0, 'lat': 39.3486, 'lon': -101.7101},
+    {'co': 'Seaboard Energy Kansas (formerly Synata Bio Inc.)', 'st': 'KS', 'city': 'Hugoton', 'county': 'Stevens', 'status': 'Repurposed', 'cls': 'Renewable Diesel', 'typ': 'Waste', 'eth_gal': 25000000, 'corn_bu': None, 'start_yr': 2014, 'lat': 37.1747, 'lon': -101.3493},
+    {'co': 'ESE Alcohol Inc.', 'st': 'KS', 'city': 'Leoti', 'county': 'Wichita', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 2000000, 'corn_bu': 714000, 'start_yr': 1991, 'lat': 38.4839, 'lon': -101.3559},
+    {'co': 'Arkalon Energy, LLC', 'st': 'KS', 'city': 'Liberal', 'county': 'Seward', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 110000000, 'corn_bu': 39286000, 'start_yr': 2007, 'lat': 37.0431, 'lon': -100.9237},
+    {'co': 'Kansas Ethanol, LLC', 'st': 'KS', 'city': 'Lyons', 'county': 'Rice', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80000000, 'corn_bu': 28571000, 'start_yr': 2008, 'lat': 38.3439, 'lon': -98.2045},
+    {'co': 'Amber Wave (owned by Summit Agricultural Group formerly Prairie Horizon Agri-Energy, LLC)', 'st': 'KS', 'city': 'Phillipsburg', 'county': 'Phillips', 'status': 'Repurposed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': None, 'start_yr': 2007, 'lat': 39.7589, 'lon': -99.3228},
+    {'co': 'Pratt Energy', 'st': 'KS', 'city': 'Pratt', 'county': 'Pratt', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 57000000, 'corn_bu': 20357000, 'start_yr': 2007, 'lat': 37.6437, 'lon': -98.737},
+    {'co': 'Purefield Ingredients Llc (SVPGlobal)', 'st': 'KS', 'city': 'Russell', 'county': 'Russell', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': None, 'start_yr': 2001, 'lat': 38.8992, 'lon': -98.8585},
+    {'co': 'Butamax Advanced Biofuels LLC (formerly Nesika Energy LLC)', 'st': 'KS', 'city': 'Scandia', 'county': 'Republic', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 10000000, 'corn_bu': 3571000, 'start_yr': 2008, 'lat': 39.7875, 'lon': -97.7739},
+    {'co': "Scott's Auburn Mills Inc.", 'st': 'KY', 'city': 'Auburn', 'county': 'Logan', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 2100000, 'start_yr': 1876, 'lat': 36.8622, 'lon': -86.7103},
+    {'co': 'Burkmann Feeds', 'st': 'KY', 'city': 'Bowling Green', 'county': 'Warren', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1530000, 'start_yr': 1950, 'lat': 36.9903, 'lon': -86.4436},
+    {'co': 'Azteca Milling', 'st': 'KY', 'city': 'Henderson', 'county': 'Henderson', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 9450000, 'start_yr': 2001, 'lat': 37.8361, 'lon': -87.59},
+    {'co': 'Commonwealth Agri-Energy', 'st': 'KY', 'city': 'Hopkinsville', 'county': 'Christian', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 48000000, 'corn_bu': 17143000, 'start_yr': 2004, 'lat': 36.8656, 'lon': -87.4886},
+    {'co': 'Hopkinsville Milling Co.', 'st': 'KY', 'city': 'Hopkinsville', 'county': 'Christian', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 6500000, 'start_yr': 1908, 'lat': 36.8656, 'lon': -87.4886},
+    {'co': 'Parallel Products Inc', 'st': 'KY', 'city': 'Louisville', 'county': 'Jefferson', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 5000000, 'corn_bu': None, 'start_yr': None, 'lat': 38.2527, 'lon': -85.7585},
+    {'co': 'Weisenberger Mills Inc.', 'st': 'KY', 'city': 'Midway', 'county': 'Woodford', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 122500, 'start_yr': 1865, 'lat': 38.1512, 'lon': -84.6908},
+    {'co': 'Alltech Springfield', 'st': 'KY', 'city': 'Springfield', 'county': 'Washington', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Waste', 'eth_gal': 1040000, 'corn_bu': None, 'start_yr': 2012, 'lat': 37.687, 'lon': -85.2191},
+    {'co': 'Washington Quality Foods', 'st': 'MD', 'city': 'Ellicott City', 'county': 'Howard', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 2820000, 'start_yr': 1974, 'lat': 39.2676, 'lon': -76.7985},
+    {'co': 'The Andersons Marathon Holdings LLC', 'st': 'MI', 'city': 'Albion', 'county': 'Calhoun', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 147000000, 'corn_bu': 52500000, 'start_yr': 2006, 'lat': 42.2431, 'lon': -84.7519},
+    {'co': 'GranBio (formerly American Process Inc. - Alpena Biorefinery)', 'st': 'MI', 'city': 'Alpena', 'county': 'Aplena', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Cellulosic', 'eth_gal': None, 'corn_bu': None, 'start_yr': 2013, 'lat': 45.0617, 'lon': -83.4327},
+    {'co': 'POET Biorefining', 'st': 'MI', 'city': 'Caro', 'county': 'Tuscola', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80000000, 'corn_bu': 28571000, 'start_yr': 2002, 'lat': 43.4878, 'lon': -83.3966},
+    {'co': 'Liberty Renewable Fuels LLC', 'st': 'MI', 'city': 'Ithaca', 'county': 'Gratiot', 'status': 'Hold', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 100000000, 'corn_bu': 35714000, 'start_yr': 0, 'lat': 43.2945, 'lon': -84.6069},
+    {'co': 'Marysville Ethanol, LLC', 'st': 'MI', 'city': 'Marysville', 'county': 'St. Clair', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2007, 'lat': 42.9123, 'lon': -82.7297},
+    {'co': 'Valero Renewable Fuels', 'st': 'MI', 'city': 'Riga', 'county': 'Lenawee', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 19000000, 'start_yr': 2007, 'lat': 41.8122, 'lon': -83.9102},
+    {'co': 'Carbon Green Bioenergy', 'st': 'MI', 'city': 'Woodbury', 'county': 'Eaton', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 59000000, 'corn_bu': 21071000, 'start_yr': 2006, 'lat': 42.65, 'lon': -84.9786},
+    {'co': 'POET Biorefining (Agra Resources Co-op)', 'st': 'MN', 'city': 'Albert Lea', 'county': 'Freeborn', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 48000000, 'corn_bu': 17143000, 'start_yr': 1999, 'lat': 43.648, 'lon': -93.3683},
+    {'co': 'Bushmills Ethanol, Inc.', 'st': 'MN', 'city': 'Atwater', 'county': 'Kandiyohi', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2005, 'lat': 45.1344, 'lon': -94.7804},
+    {'co': 'Chippewa Valley Ethanol Co.', 'st': 'MN', 'city': 'Benson', 'county': 'Swift', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 18519000, 'start_yr': 1996, 'lat': 45.3152, 'lon': -95.6011},
+    {'co': 'POET Biorefining (Ethanol2000 LLP)', 'st': 'MN', 'city': 'Bingham Lake', 'county': 'Cottonwood', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 35000000, 'corn_bu': 12500000, 'start_yr': 1997, 'lat': 43.9083, 'lon': -95.04},
+    {'co': 'Buffalo Lake Advanced Biofuels', 'st': 'MN', 'city': 'Buffalo Lake', 'county': 'Renville', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 18000000, 'corn_bu': 6429000, 'start_yr': 1997, 'lat': 44.733, 'lon': -94.6117},
+    {'co': 'Al-Corn Clean Fuel', 'st': 'MN', 'city': 'Claremont', 'county': 'Dodge', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 46429000, 'start_yr': 1996, 'lat': 44.0372, 'lon': -92.9897},
+    {'co': 'Homestead Mills', 'st': 'MN', 'city': 'Cook', 'county': 'St. Louis', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1300000, 'start_yr': 1939, 'lat': 47.8527, 'lon': -92.688},
+    {'co': 'Green Plains Renewable Energy (Buffalo Lake Energy, LLC)', 'st': 'MN', 'city': 'Fairmont', 'county': 'Martin', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 119000000, 'corn_bu': 41006000, 'start_yr': 2008, 'lat': 43.6516, 'lon': -94.4608},
+    {'co': 'Green Plains Renewable Energy - Otter Tail', 'st': 'MN', 'city': 'Fergus Falls', 'county': 'Otter Tail', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 20429000, 'start_yr': 2008, 'lat': 46.283, 'lon': -96.0778},
+    {'co': 'Granite Falls Energy, LLC', 'st': 'MN', 'city': 'Granite Falls', 'county': 'Yellow Medicine', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 64000000, 'corn_bu': 22069000, 'start_yr': 2005, 'lat': 44.8127, 'lon': -95.5458},
+    {'co': 'Heron Lake BioEnergy LLC', 'st': 'MN', 'city': 'Heron Lake', 'county': 'Jackson', 'status': 'Expansion', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 66036000, 'corn_bu': 22615000, 'start_yr': 2008, 'lat': 43.7919, 'lon': -95.3219},
+    {'co': 'Guardian Energy LLC', 'st': 'MN', 'city': 'Janesville', 'county': 'Waseca', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 164000000, 'corn_bu': 55593220, 'start_yr': 2008, 'lat': 44.1194, 'lon': -93.7138},
+    {'co': 'POET Biorefining', 'st': 'MN', 'city': 'Lake Crystal', 'county': 'Blue Earth', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 68000000, 'corn_bu': 24286000, 'start_yr': 2005, 'lat': 44.1038, 'lon': -94.2188},
+    {'co': 'Highwater Ethanol LLC', 'st': 'MN', 'city': 'Lamberton', 'county': 'Redwood', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 67000000, 'corn_bu': 22112211, 'start_yr': 2009, 'lat': 44.2333, 'lon': -95.2647},
+    {'co': 'White Dog Labs', 'st': 'MN', 'city': 'Little Falls', 'county': 'Morrison', 'status': 'Run', 'cls': 'Ethanol/Aquaculture Feed', 'typ': 'Dry', 'eth_gal': 18000000, 'corn_bu': 6429000, 'start_yr': 1999, 'lat': 45.9763, 'lon': -94.3622},
+    {'co': 'Gevo (Agri-Energy LLC)', 'st': 'MN', 'city': 'Luverne', 'county': 'Rock', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 19000000, 'corn_bu': 6786000, 'start_yr': 1999, 'lat': 43.6539, 'lon': -96.2133},
+    {'co': 'Archer Daniels Midland', 'st': 'MN', 'city': 'Marshall', 'county': 'Lyon', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 48000000, 'corn_bu': 42000000, 'start_yr': 2002, 'lat': 44.4475, 'lon': -95.7915},
+    {'co': 'DENCO II, LLC', 'st': 'MN', 'city': 'Morris', 'county': 'Stevens', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 30000000, 'corn_bu': 11538000, 'start_yr': 1999, 'lat': 45.5861, 'lon': -95.9139},
+    {'co': 'POET Biorefining (Pro Corn LLC)', 'st': 'MN', 'city': 'Preston', 'county': 'Fillmore', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 19643000, 'start_yr': 1998, 'lat': 43.6702, 'lon': -92.0832},
+    {'co': 'Valero Renewable Fuels', 'st': 'MN', 'city': 'Welcome', 'county': 'Martin', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 49000000, 'start_yr': 2009, 'lat': 43.6671, 'lon': -94.6188},
+    {'co': 'Greenfield Global (formerly Corn Plus)', 'st': 'MN', 'city': 'Winnebago', 'county': 'Faribault', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 43000000, 'corn_bu': 16538000, 'start_yr': 1994, 'lat': 43.7677, 'lon': -94.1659},
+    {'co': 'Heartland Corn Products', 'st': 'MN', 'city': 'Winthrop', 'county': 'Sibley', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 50000000, 'start_yr': 1994, 'lat': 44.543, 'lon': -94.3664},
+    {'co': 'Show Me Ethanol', 'st': 'MO', 'city': 'Carrollton', 'county': 'Carroll', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 65000000, 'corn_bu': 22429000, 'start_yr': 2008, 'lat': 39.3582, 'lon': -93.4965},
+    {'co': 'Golden Triangle Energy, LLC', 'st': 'MO', 'city': 'Craig', 'county': 'Holt', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 21000000, 'corn_bu': 7500000, 'start_yr': 2001, 'lat': 40.1947, 'lon': -95.3711},
+    {'co': 'Hodgson Mill Inc.', 'st': 'MO', 'city': 'Gainesville', 'county': 'Ozark', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3050000, 'start_yr': 1883, 'lat': 36.6031, 'lon': -92.4282},
+    {'co': 'Ingredion Inc.', 'st': 'MO', 'city': 'Kansas City', 'county': 'Jackson', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 8750000, 'start_yr': 1925, 'lat': 39.1001, 'lon': -94.5781},
+    {'co': 'POET Biorefining', 'st': 'MO', 'city': 'Laddonia', 'county': 'Audrain', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80000000, 'corn_bu': 28571000, 'start_yr': 2006, 'lat': 39.2425, 'lon': -91.6454},
+    {'co': 'POET Biorefining (Northeast Missouri Grain LLC)', 'st': 'MO', 'city': 'Macon', 'county': 'Macon', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 19643000, 'start_yr': 2000, 'lat': 39.8416, 'lon': -92.5675},
+    {'co': 'Mid-Missouri Energy, Inc.', 'st': 'MO', 'city': 'Malta Bend', 'county': 'Saline', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 2005, 'lat': 39.1934, 'lon': -93.3631},
+    {'co': 'SEMO Milling, LLC', 'st': 'MO', 'city': 'Scott City', 'county': 'Scott', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 8660960, 'start_yr': 2007, 'lat': 37.2163, 'lon': -89.5261},
+    {'co': 'Lifeline Foods, LLC', 'st': 'MO', 'city': 'St. Joseph', 'county': 'Buchanan', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 7200000, 'start_yr': 2001, 'lat': 39.7686, 'lon': -94.8466},
+    {'co': 'Lifeline Foods, LLC - Ethanol (ICM Biofuels LLC)', 'st': 'MO', 'city': 'St. Joseph', 'county': 'Buchanan', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 17857000, 'start_yr': 2007, 'lat': 39.7686, 'lon': -94.8466},
+    {'co': 'The Attala Co.', 'st': 'MS', 'city': 'Kosciusko', 'county': 'Attala', 'status': 'Closed', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 4300000, 'start_yr': 1937, 'lat': 33.0576, 'lon': -89.5876},
+    {'co': 'Ergon Ethanol', 'st': 'MS', 'city': 'Vicksburg', 'county': 'Warren', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 54000000, 'corn_bu': 19286000, 'start_yr': 2008, 'lat': 32.3528, 'lon': -90.8777},
+    {'co': 'Alltech Eden', 'st': 'NC', 'city': 'Eden', 'county': 'Rockingham', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Waste', 'eth_gal': 1040000, 'corn_bu': None, 'start_yr': None, 'lat': 36.4885, 'lon': -79.7667},
+    {'co': 'House-Autry Mills, Inc.', 'st': 'NC', 'city': 'Four Oaks', 'county': 'Johnston', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 250000, 'start_yr': 2001, 'lat': 35.4456, 'lon': -78.4295},
+    {'co': 'King Milling Co.', 'st': 'NC', 'city': 'King', 'county': 'Stokes', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3120000, 'start_yr': 1920, 'lat': 36.2807, 'lon': -80.3592},
+    {'co': 'Renwood Mills', 'st': 'NC', 'city': 'Newton', 'county': 'Catawba', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3060000, 'start_yr': 1935, 'lat': 35.6631, 'lon': -81.2219},
+    {'co': 'Benchmark Renewable Energy (formerly Tyton Biofuels LLC)', 'st': 'NC', 'city': 'Raeford', 'county': 'Hoke', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 4285800, 'start_yr': 2010, 'lat': 34.981, 'lon': -79.2242},
+    {'co': 'Lakeside Mills, Inc.', 'st': 'NC', 'city': 'Seven Springs', 'county': 'Wayne', 'status': 'Closed', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3060000, 'start_yr': 1736, 'lat': 35.2266, 'lon': -77.8465},
+    {'co': 'Lakeside Mills, Inc.', 'st': 'NC', 'city': 'Spindale', 'county': 'Rutherford', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3060000, 'start_yr': 1736, 'lat': 35.3575, 'lon': -81.9312},
+    {'co': 'Tharaldson Ethanol Plant', 'st': 'ND', 'city': 'Casselton', 'county': 'Cass', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 185000000, 'corn_bu': 66071000, 'start_yr': 2011, 'lat': 46.9005, 'lon': -97.2112},
+    {'co': 'Alchem Ltd. LLP', 'st': 'ND', 'city': 'Grafton', 'county': 'Walsh', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 10500000, 'corn_bu': 3750000, 'start_yr': 1995, 'lat': 48.4122, 'lon': -97.4106},
+    {'co': 'Fufeng Group Ltd.', 'st': 'ND', 'city': 'Grand Forks', 'county': 'Grand Forks', 'status': 'Hold', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 25000000, 'start_yr': None, 'lat': 47.9252, 'lon': -97.0306},
+    {'co': 'Red River Biorefinery, LLC', 'st': 'ND', 'city': 'Grand Forks', 'county': 'Grand Forks', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 16500000, 'corn_bu': None, 'start_yr': 2020, 'lat': 47.9252, 'lon': -97.0306},
+    {'co': 'Guardian Hankinson, LLC - Doubling', 'st': 'ND', 'city': 'Hankinson', 'county': 'Richland', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 150000000, 'corn_bu': 52000000, 'start_yr': 1995, 'lat': 46.0697, 'lon': -96.9017},
+    {'co': 'Harvestone Dakota Spirit', 'st': 'ND', 'city': 'Jamestown', 'county': 'Stutsman', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 77000000, 'corn_bu': 27500000, 'start_yr': 2015, 'lat': 46.9105, 'lon': -98.7084},
+    {'co': 'Net Zero Holdings (Gevo)', 'st': 'ND', 'city': 'Richardton', 'county': 'Stark', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 65000000, 'corn_bu': 22821000, 'start_yr': 2008, 'lat': 46.8839, 'lon': -102.3157},
+    {'co': 'Harvestone Blue Flint', 'st': 'ND', 'city': 'Underwood', 'county': 'McLean', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 74500000, 'corn_bu': 26607000, 'start_yr': 2008, 'lat': 47.4564, 'lon': -101.1371},
+    {'co': 'Cargill Inc.', 'st': 'ND', 'city': 'Wahpeton', 'county': 'Richland', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 30000000, 'start_yr': 2004, 'lat': 46.2659, 'lon': -96.6089},
+    {'co': 'SweetPro Feeds', 'st': 'ND', 'city': 'Walhalla', 'county': 'Pembina', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 30000000, 'corn_bu': 10714000, 'start_yr': 2009, 'lat': 48.9233, 'lon': -97.9181},
+    {'co': 'E Energy Adams, LLC', 'st': 'NE', 'city': 'Adams', 'county': 'Gage', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 101000000, 'corn_bu': 36071000, 'start_yr': 1992, 'lat': 40.5126, 'lon': -98.5149},
+    {'co': 'Valero Renewable Fuels', 'st': 'NE', 'city': 'Albion', 'county': 'Boone', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 135000000, 'corn_bu': 47000000, 'start_yr': 1979, 'lat': 41.6929, 'lon': -98.0012},
+    {'co': 'Sandhills Renewable Energy LLC (formerly Green Plains Renewable Energy)', 'st': 'NE', 'city': 'Atkinson', 'county': 'Holt', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 18000000, 'start_yr': 2008, 'lat': 42.5314, 'lon': -98.9782},
+    {'co': 'KAAPA Partners Aurora, LLC', 'st': 'NE', 'city': 'Aurora', 'county': 'Hamilton', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 45000000, 'corn_bu': 16071000, 'start_yr': 1995, 'lat': 40.8669, 'lon': -98.0045},
+    {'co': 'KAAPA Partners Aurora, LLC', 'st': 'NE', 'city': 'Aurora', 'county': 'Hamilton', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 150000000, 'corn_bu': 53571000, 'start_yr': 2011, 'lat': 40.8669, 'lon': -98.0045},
+    {'co': 'Cargill Inc.', 'st': 'NE', 'city': 'Blair', 'county': 'Washington', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 210000000, 'corn_bu': 70000000, 'start_yr': 1995, 'lat': 41.5438, 'lon': -96.136},
+    {'co': 'Bridgeport Ethanol LLC', 'st': 'NE', 'city': 'Bridgeport', 'county': 'Morrill', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 54000000, 'corn_bu': 19286000, 'start_yr': 2008, 'lat': 41.6666, 'lon': -103.0977},
+    {'co': 'Nebraska Corn Processing LLC', 'st': 'NE', 'city': 'Cambridge', 'county': 'Furnas', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 17857000, 'start_yr': 2008, 'lat': 40.282, 'lon': -100.166},
+    {'co': 'Green Plains Renewable Energy', 'st': 'NE', 'city': 'Central City', 'county': 'Merrick', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 116000000, 'corn_bu': 41429000, 'start_yr': 2004, 'lat': 41.1158, 'lon': -98.0017},
+    {'co': 'Archer Daniels Midland', 'st': 'NE', 'city': 'Columbus', 'county': 'Platte', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': 100000000, 'corn_bu': 48000000, 'start_yr': 1992, 'lat': 41.4293, 'lon': -97.3581},
+    {'co': 'Vantage Corn Processors (Archer Daniels Midland)', 'st': 'NE', 'city': 'Columbus', 'county': 'Platte', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 313000000, 'corn_bu': 54000000, 'start_yr': 2009, 'lat': 41.4293, 'lon': -97.3581},
+    {'co': 'Bunge Milling', 'st': 'NE', 'city': 'Crete', 'county': 'Saline', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 17500000, 'start_yr': 1979, 'lat': 40.6257, 'lon': -96.9614},
+    {'co': 'POET Biorefining (formerly Flint Hills Resources LP)', 'st': 'NE', 'city': 'Fairmont', 'county': 'Fillmore', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 128000000, 'corn_bu': 45714000, 'start_yr': 2007, 'lat': 40.6361, 'lon': -97.5853},
+    {'co': 'Lincoln Premium Poultry', 'st': 'NE', 'city': 'Fremont', 'county': 'Dodge', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 18200000, 'start_yr': 2019, 'lat': 41.4338, 'lon': -96.496},
+    {'co': 'AGP', 'st': 'NE', 'city': 'Hastings', 'county': 'Adams', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 52000000, 'corn_bu': 18571000, 'start_yr': 1995, 'lat': 40.5861, 'lon': -98.3899},
+    {'co': 'Chief Ethanol Fuels, Inc.', 'st': 'NE', 'city': 'Hastings', 'county': 'Adams', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 70000000, 'corn_bu': 25000000, 'start_yr': 1985, 'lat': 40.5861, 'lon': -98.3899},
+    {'co': 'Siouxland Ethanol, LLC', 'st': 'NE', 'city': 'Jackson', 'county': 'Dakota', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 96400000, 'corn_bu': 34429000, 'start_yr': 2007, 'lat': 42.4483, 'lon': -96.5655},
+    {'co': 'Chief Ethanol Fuels Inc.', 'st': 'NE', 'city': 'Lexington', 'county': 'Dawson', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 17857000, 'start_yr': 2005, 'lat': 40.7788, 'lon': -99.7415},
+    {'co': 'ADM Milling', 'st': 'NE', 'city': 'Lincoln', 'county': 'Lancaster', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3640000, 'start_yr': 1908, 'lat': 40.8089, 'lon': -96.7078},
+    {'co': 'Mid America Agri Products/Wheatland, LLC', 'st': 'NE', 'city': 'Madrid', 'county': 'Perkins', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 51000000, 'corn_bu': 18214000, 'start_yr': 2007, 'lat': 40.8502, 'lon': -101.5437},
+    {'co': 'Alten LLC', 'st': 'NE', 'city': 'Mead', 'county': 'Saunders', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 24100000, 'corn_bu': 8607000, 'start_yr': 2015, 'lat': 41.2266, 'lon': -96.4893},
+    {'co': 'KAAPA Ethanol, LLC', 'st': 'NE', 'city': 'Minden', 'county': 'Kearney', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 85000000, 'corn_bu': 29825000, 'start_yr': 2003, 'lat': 40.4985, 'lon': -98.9477},
+    {'co': 'Central Indiana Ethanol, LLC (formerly Louis Dreyfus Commodities [Elkhorn Valley Ethanol])', 'st': 'NE', 'city': 'Norfolk', 'county': 'Madison', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 17857000, 'start_yr': 2007, 'lat': 42.0283, 'lon': -97.417},
+    {'co': 'GreenAmerica Biofuels Ord LLC', 'st': 'NE', 'city': 'Ord', 'county': 'Valley', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 68000000, 'corn_bu': 24286000, 'start_yr': 2007, 'lat': 41.6033, 'lon': -98.9262},
+    {'co': 'Husker Ag, LLC', 'st': 'NE', 'city': 'Plainview', 'county': 'Pierce', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 109000000, 'corn_bu': 37586000, 'start_yr': 2003, 'lat': 42.3496, 'lon': -97.7935},
+    {'co': 'KAAPA Ethanol Ravenna LLC', 'st': 'NE', 'city': 'Ravenna', 'county': 'Buffalo', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 125000000, 'corn_bu': 43103000, 'start_yr': 2007, 'lat': 41.0254, 'lon': -98.9126},
+    {'co': 'Midwest Renewable Energy, LLC', 'st': 'NE', 'city': 'Sutherland', 'county': 'Lincoln', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 28000000, 'corn_bu': 10000000, 'start_yr': 2000, 'lat': 41.1571, 'lon': -101.1262},
+    {'co': 'Trenton Agri Products, LLC', 'st': 'NE', 'city': 'Trenton', 'county': 'Hitchcock', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 19643000, 'start_yr': 2004, 'lat': 40.1758, 'lon': -101.0132},
+    {'co': 'Green Plains Renewable Energy', 'st': 'NE', 'city': 'Wood River', 'county': 'Hall', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 120000000, 'corn_bu': 41351000, 'start_yr': 2008, 'lat': 40.8211, 'lon': -98.6006},
+    {'co': 'Green Plains Renewable Energy', 'st': 'NE', 'city': 'York', 'county': 'York', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 18519000, 'start_yr': 1994, 'lat': 40.8716, 'lon': -97.6001},
+    {'co': 'Natural Chem Group LLC', 'st': 'NM', 'city': 'Portales', 'county': 'Roosevelt', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 30000000, 'corn_bu': 10714000, 'start_yr': 1985, 'lat': 34.186, 'lon': -103.3373},
+    {'co': 'Attis Industries (formerly Sunoco)', 'st': 'NY', 'city': 'Fulton', 'county': 'Oswego', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 100000000, 'corn_bu': 11904666, 'start_yr': 2008, 'lat': 43.1062, 'lon': -74.4462},
+    {'co': 'Western New York Energy, LLC', 'st': 'NY', 'city': 'Medina', 'county': 'Niagara', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 65000000, 'corn_bu': 11607000, 'start_yr': 1985, 'lat': 43.2203, 'lon': -78.3866},
+    {'co': 'Champlain Valley Milling Corp.', 'st': 'NY', 'city': 'Willsboro', 'county': 'Essex', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 510000, 'start_yr': 1985, 'lat': 44.3621, 'lon': -73.3913},
+    {'co': 'Valero Renewable Fuels', 'st': 'OH', 'city': 'Bloomingburg', 'county': 'Fayette', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 135000000, 'corn_bu': 47000000, 'start_yr': 2008, 'lat': 39.6051, 'lon': -83.3955},
+    {'co': 'Clifton Mills Co.', 'st': 'OH', 'city': 'Clifton', 'county': 'Greene', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3060000, 'start_yr': 1802, 'lat': 39.7968, 'lon': -83.8259},
+    {'co': 'Three Rivers Energy (CE Acquisitions Co LLC)', 'st': 'OH', 'city': 'Coshocton', 'county': 'Coshocton', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 50000000, 'corn_bu': 17857000, 'start_yr': 2008, 'lat': 40.2906, 'lon': -81.9271},
+    {'co': 'Cargill Inc.', 'st': 'OH', 'city': 'Dayton', 'county': 'Montgomery', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 17150000, 'start_yr': 1973, 'lat': 39.7589, 'lon': -84.1916},
+    {'co': 'POET Biorefining', 'st': 'OH', 'city': 'Fostoria', 'county': 'Seneca', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2008, 'lat': 41.1574, 'lon': -83.4141},
+    {'co': 'The Andersons Marathon Holdings LLC', 'st': 'OH', 'city': 'Greenville', 'county': 'Darke', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 154000000, 'corn_bu': 55000000, 'start_yr': 2008, 'lat': 40.1024, 'lon': -84.6333},
+    {'co': 'POET Biorefining', 'st': 'OH', 'city': 'Leipsic', 'county': 'Putnam', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2008, 'lat': 41.0984, 'lon': -83.9847},
+    {'co': 'Guardian Lima, LLC', 'st': 'OH', 'city': 'Lima', 'county': 'Allen', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 84000000, 'corn_bu': 30000000, 'start_yr': 2008, 'lat': 40.74, 'lon': -84.105},
+    {'co': 'POET Biorefining', 'st': 'OH', 'city': 'Marion', 'county': 'Marion', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 154000000, 'corn_bu': 51505000, 'start_yr': 2008, 'lat': 40.5885, 'lon': -83.1895},
+    {'co': 'Shawnee Milling Co.', 'st': 'OK', 'city': 'Shawnee', 'county': 'Pottawatomie', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 2750000, 'start_yr': 1891, 'lat': 35.3273, 'lon': -96.9253},
+    {'co': 'Alto Ingredients, Inc.', 'st': 'OR', 'city': 'Boardman', 'county': 'Morrow', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 40000000, 'corn_bu': 3571500, 'start_yr': 2007, 'lat': 45.8399, 'lon': -119.7006},
+    {'co': 'ZeaChem Inc.', 'st': 'OR', 'city': 'Boardman', 'county': 'Morrow', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Cellulosic', 'eth_gal': None, 'corn_bu': None, 'start_yr': None, 'lat': 45.8399, 'lon': -119.7006},
+    {'co': 'Columbia Pacific Bio-Refinery', 'st': 'OR', 'city': 'Clatskanie', 'county': 'Columbia', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 108000000, 'corn_bu': 38571000, 'start_yr': 2008, 'lat': 46.1037, 'lon': -123.2048},
+    {'co': 'Summit Natural Energy, Inc.', 'st': 'OR', 'city': 'Cornelius', 'county': 'Washington', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 1000000, 'corn_bu': None, 'start_yr': 2008, 'lat': 45.5198, 'lon': -123.0556},
+    {'co': 'Pennsylvania Grain Processing LLC', 'st': 'PA', 'city': 'Clearfield', 'county': 'Clearfield', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 128000000, 'corn_bu': 22857000, 'start_yr': 2010, 'lat': 40.9909, 'lon': -78.4457},
+    {'co': 'H.R. Wentzel Sons, Inc.', 'st': 'PA', 'city': 'Newport', 'county': 'Perry', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1530000, 'start_yr': 1805, 'lat': 40.4779, 'lon': -77.1305},
+    {'co': 'Vermont Milling LTD', 'st': 'PA', 'city': 'Pottsgrove', 'county': 'Montgomery', 'status': 'Closed', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1530000, 'start_yr': 1950, 'lat': 40.2626, 'lon': -75.6108},
+    {'co': 'Allen Brothers Milling Co.', 'st': 'SC', 'city': 'Columbia', 'county': 'Richland', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1250000, 'start_yr': 1900, 'lat': 34.0008, 'lon': -81.0352},
+    {'co': 'Glacial Lakes Energy, LLC (Hub City Energy Llc)', 'st': 'SD', 'city': 'Aberdeen', 'county': 'Brown', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 48000000, 'corn_bu': 17143000, 'start_yr': 2008, 'lat': 45.465, 'lon': -98.4878},
+    {'co': 'Valero Renewable Fuels', 'st': 'SD', 'city': 'Aurora', 'county': 'Brookings', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 140000000, 'corn_bu': 49000000, 'start_yr': 2003, 'lat': 43.6963, 'lon': -98.5722},
+    {'co': 'POET Biorefining (Northern Lights Ethanol LLC)', 'st': 'SD', 'city': 'Big Stone City', 'county': 'Grant', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 105000000, 'corn_bu': 37500000, 'start_yr': 2002, 'lat': 45.2916, 'lon': -96.4628},
+    {'co': 'POET Biorefining (Great Plains Ethanol LLC)', 'st': 'SD', 'city': 'Chancellor', 'county': 'Turner', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 125000000, 'corn_bu': 44643000, 'start_yr': 2003, 'lat': 43.3721, 'lon': -96.9872},
+    {'co': 'POET Biorefining (James Valley Ethanol LLC)', 'st': 'SD', 'city': 'Groton', 'county': 'Brown', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 68000000, 'corn_bu': 24286000, 'start_yr': 2003, 'lat': 45.4473, 'lon': -98.0988},
+    {'co': 'POET Biorefining (Sioux River Ethanol)', 'st': 'SD', 'city': 'Hudson', 'county': 'Lincoln', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80000000, 'corn_bu': 28571000, 'start_yr': 2004, 'lat': 43.1302, 'lon': -96.4543},
+    {'co': 'Glacial Lakes Energy, LLC (Huron Energy Llc)', 'st': 'SD', 'city': 'Huron', 'county': 'Beadle', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 34600000, 'corn_bu': 12357000, 'start_yr': 1999, 'lat': 44.3631, 'lon': -98.2144},
+    {'co': 'Gevo', 'st': 'SD', 'city': 'Lake Preston', 'county': 'Kingsbury', 'status': 'Build', 'cls': 'SAF/Renewable Diesel', 'typ': 'ATJ', 'eth_gal': 62000000, 'corn_bu': 41333333, 'start_yr': None, 'lat': 44.3636, 'lon': -97.3764},
+    {'co': 'NuGen Energy', 'st': 'SD', 'city': 'Marion', 'county': 'Turner', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 150000000, 'corn_bu': 53571000, 'start_yr': 2008, 'lat': 43.4231, 'lon': -97.2604},
+    {'co': 'Missouri Valley Energy LLC', 'st': 'SD', 'city': 'Meckling', 'county': 'Clay', 'status': 'Hold', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 21429000, 'start_yr': 0, 'lat': 42.8425, 'lon': -97.0695},
+    {'co': 'Glacial Lakes Energy, LLC', 'st': 'SD', 'city': 'Mina', 'county': 'Edmunds', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 46429000, 'start_yr': 2008, 'lat': 45.4384, 'lon': -98.756},
+    {'co': 'Ringneck Energy', 'st': 'SD', 'city': 'Onida', 'county': 'Sully', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 80000000, 'corn_bu': 28571000, 'start_yr': 2019, 'lat': 44.7056, 'lon': -100.0655},
+    {'co': 'Redfield Energy, LLC', 'st': 'SD', 'city': 'Redfield', 'county': 'Spink', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 65000000, 'corn_bu': 22919000, 'start_yr': 2007, 'lat': 44.8758, 'lon': -98.5187},
+    {'co': 'Red River Energy, LLC', 'st': 'SD', 'city': 'Rosholt', 'county': 'Roberts', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 36000000, 'corn_bu': 12857000, 'start_yr': 2005, 'lat': 45.8666, 'lon': -96.7315},
+    {'co': 'POET Biorefining - Research Center', 'st': 'SD', 'city': 'Scotland', 'county': 'Bon Homme', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 12000000, 'corn_bu': 4286000, 'start_yr': 1988, 'lat': 43.1497, 'lon': -97.7176},
+    {'co': 'Glacial Lakes Energy, LLC', 'st': 'SD', 'city': 'Watertown', 'county': 'Codington', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 46429000, 'start_yr': 2002, 'lat': 44.8992, 'lon': -97.1153},
+    {'co': 'Dakota Ethanol, LLC', 'st': 'SD', 'city': 'Wentworth', 'county': 'Lake', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 100000000, 'corn_bu': 35714000, 'start_yr': 2001, 'lat': 43.9972, 'lon': -96.9642},
+    {'co': 'Dynamic Recycling LLC', 'st': 'TN', 'city': 'Bristol', 'county': 'Sullivan', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 4000000, 'corn_bu': None, 'start_yr': None, 'lat': 36.5945, 'lon': -82.1885},
+    {'co': 'ADM Milling Co.', 'st': 'TN', 'city': 'Jackson', 'county': 'Madison', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3600000, 'start_yr': 1989, 'lat': 35.6144, 'lon': -88.8177},
+    {'co': 'White Lily (owned by Hometown Food Company)', 'st': 'TN', 'city': 'Knoxville', 'county': 'Knox', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 4950000, 'start_yr': 1883, 'lat': 35.9604, 'lon': -83.921},
+    {'co': 'Tate & Lyle', 'st': 'TN', 'city': 'Loudon', 'county': 'Loudon', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 110000000, 'corn_bu': 39286000, 'start_yr': 2006, 'lat': 35.749, 'lon': -84.3203},
+    {'co': 'Clover Hill Milling Company', 'st': 'TN', 'city': 'Maryville', 'county': 'Blount', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 2100000, 'start_yr': 1921, 'lat': 35.7565, 'lon': -83.9705},
+    {'co': 'Cargill Inc.', 'st': 'TN', 'city': 'Memphis', 'county': 'Shelby', 'status': 'Idled', 'cls': 'Mixed', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 20825000, 'start_yr': 1951, 'lat': 35.146, 'lon': -90.0518},
+    {'co': 'Green Plains Renewable Energy', 'st': 'TN', 'city': 'Obion', 'county': 'Obion', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 120000000, 'corn_bu': 41354000, 'start_yr': 2008, 'lat': 36.3556, 'lon': -89.1749},
+    {'co': 'Azteca Milling (Gruma)', 'st': 'TX', 'city': 'Amarillo', 'county': 'Potter', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 9450000, 'start_yr': 1996, 'lat': 35.2073, 'lon': -101.8371},
+    {'co': 'International Ingredient Corporation', 'st': 'TX', 'city': 'Cleburne', 'county': 'Johnson', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Waste', 'eth_gal': 840000, 'corn_bu': None, 'start_yr': None, 'lat': 32.3474, 'lon': -97.3865},
+    {'co': 'The Morrison Milling Co. Div Guenther & Sons', 'st': 'TX', 'city': 'Denton', 'county': 'Denton', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 5200000, 'start_yr': 1886, 'lat': 33.1839, 'lon': -97.1413},
+    {'co': 'High Plains Milling', 'st': 'TX', 'city': 'Dimmitt', 'county': 'Castro', 'status': 'Run', 'cls': 'Food', 'typ': 'Wet', 'eth_gal': None, 'corn_bu': 11375000, 'start_yr': 1984, 'lat': 34.5488, 'lon': -102.3153},
+    {'co': 'Azteca Milling (Gruma)', 'st': 'TX', 'city': 'Edinburg', 'county': 'Hidalgo', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 9450000, 'start_yr': 1982, 'lat': 26.3014, 'lon': -98.1625},
+    {'co': 'Arrowhead Mills, Inc (owned by Hometown Food Company)', 'st': 'TX', 'city': 'Hereford', 'county': 'Deaf Smith', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3060000, 'start_yr': 1960, 'lat': 34.8246, 'lon': -102.3988},
+    {'co': 'Hereford Ethanol Partners, L.P.', 'st': 'TX', 'city': 'Hereford', 'county': 'Deaf Smith', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 120000000, 'corn_bu': None, 'start_yr': 2011, 'lat': 34.8246, 'lon': -102.3988},
+    {'co': 'White Energy', 'st': 'TX', 'city': 'Hereford', 'county': 'Deaf Smith', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 130000000, 'corn_bu': 42857000, 'start_yr': 2008, 'lat': 34.8246, 'lon': -102.3988},
+    {'co': 'Diamond Ethanol', 'st': 'TX', 'city': 'Levelland', 'county': 'Hockley', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 40000000, 'corn_bu': 14286000, 'start_yr': 2012, 'lat': 33.5871, 'lon': -102.3777},
+    {'co': 'Azteca Milling (Gruma)', 'st': 'TX', 'city': 'Plainview', 'county': 'Hale', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3150000, 'start_yr': 1989, 'lat': 34.1848, 'lon': -101.7068},
+    {'co': 'White Energy', 'st': 'TX', 'city': 'Plainview', 'county': 'Hale', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 122800000, 'corn_bu': 43857000, 'start_yr': 2008, 'lat': 34.1848, 'lon': -101.7068},
+    {'co': 'Pioneer Flour Mills Div Guenther & Son', 'st': 'TX', 'city': 'San Antonio', 'county': 'Bexar', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1430000, 'start_yr': 1899, 'lat': 29.4246, 'lon': -98.4951},
+    {'co': 'MXI Environmental Services LLC (Maumee Express, Inc.)', 'st': 'VA', 'city': 'Abingdon', 'county': 'Washington', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Waste', 'eth_gal': 2000000, 'corn_bu': None, 'start_yr': 2001, 'lat': 36.7104, 'lon': -81.9752},
+    {'co': 'Amherst Milling Co.', 'st': 'VA', 'city': 'Amherst', 'county': 'Amherst', 'status': 'Closed', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 3120000, 'start_yr': 1920, 'lat': 37.5998, 'lon': -79.1484},
+    {'co': 'Ashland Milling Co.', 'st': 'VA', 'city': 'Ashland', 'county': 'Hanover', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 2600000, 'start_yr': 1968, 'lat': 37.7594, 'lon': -77.4807},
+    {'co': 'Green Plains Renewable Energy', 'st': 'VA', 'city': 'Hopewell', 'county': 'Prince Geroge', 'status': 'Closed', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 60000000, 'corn_bu': 2142900, 'start_yr': 2014, 'lat': 37.3043, 'lon': -77.2872},
+    {'co': 'Northwest Renewable, LLC', 'st': 'WA', 'city': 'Longview', 'county': 'Cowlitz', 'status': 'Hold', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55000000, 'corn_bu': 19643000, 'start_yr': 0, 'lat': 46.1377, 'lon': -122.9345},
+    {'co': 'Big River Boyceville, LLC', 'st': 'WI', 'city': 'Boyceville', 'county': 'Dunn', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 70000000, 'corn_bu': 24964336, 'start_yr': 2006, 'lat': 45.0445, 'lon': -92.0394},
+    {'co': 'Didion Ethanol', 'st': 'WI', 'city': 'Cambria', 'county': 'Columbia', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 49300000, 'corn_bu': 23755832, 'start_yr': 2008, 'lat': 43.5433, 'lon': -89.1085},
+    {'co': 'Didion Milling', 'st': 'WI', 'city': 'Cambria', 'county': 'Columbia', 'status': 'Run', 'cls': 'Food', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1225000, 'start_yr': 1991, 'lat': 43.5433, 'lon': -89.1085},
+    {'co': 'United Wisconsin Grain Producers, LLC', 'st': 'WI', 'city': 'Friesland', 'county': 'Columbia', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 62500000, 'corn_bu': 22876138, 'start_yr': 2005, 'lat': 43.5887, 'lon': -89.0672},
+    {'co': 'Azatlan Bio LLC (formerly Valero Renewable Fuels)', 'st': 'WI', 'city': 'Jefferson', 'county': 'Jefferson', 'status': 'Expand', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': 110000000, 'corn_bu': 50000000, 'start_yr': 2008, 'lat': 43.0225, 'lon': -88.7673},
+    {'co': 'United Ethanol', 'st': 'WI', 'city': 'Milton', 'county': 'Rock', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 61000000, 'corn_bu': 4195669, 'start_yr': 2007, 'lat': 42.7754, 'lon': -88.939},
+    {'co': 'ADM Milling Company', 'st': 'WI', 'city': 'Milwaukee', 'county': 'Milwaukee', 'status': 'Run', 'cls': 'Mixed', 'typ': 'Dry', 'eth_gal': None, 'corn_bu': 1530000, 'start_yr': 1950, 'lat': 43.0386, 'lon': -87.9091},
+    {'co': 'Badger State Ethanol, LLC', 'st': 'WI', 'city': 'Monroe', 'county': 'Green', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 90000000, 'corn_bu': 32143000, 'start_yr': 2002, 'lat': 43.9417, 'lon': -90.6397},
+    {'co': 'United Energy Necedah LLC (formerly Marquis Energy - Wisconsin, LLC)', 'st': 'WI', 'city': 'Necedah', 'county': 'Juneau', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 106000000, 'corn_bu': 36000000, 'start_yr': 2008, 'lat': 44.0254, 'lon': -90.0721},
+    {'co': 'Fox River Valley', 'st': 'WI', 'city': 'Oshkosh', 'county': 'Winnebago', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 64000000, 'corn_bu': 23396677, 'start_yr': 2003, 'lat': 44.0207, 'lon': -88.5409},
+    {'co': 'Ace Ethanol, LLC', 'st': 'WI', 'city': 'Stanley', 'county': 'Chippewa', 'status': 'Run', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 55500000, 'corn_bu': 13541017, 'start_yr': 2002, 'lat': 44.9601, 'lon': -90.9375},
+    {'co': 'Renova Energy', 'st': 'WY', 'city': 'Torrington', 'county': 'Goshen', 'status': 'Idled', 'cls': 'Ethanol', 'typ': 'Dry', 'eth_gal': 10000000, 'corn_bu': 3571000, 'start_yr': 2006, 'lat': 42.0625, 'lon': -104.1844},
+]
+
+_CRUSH_PLANTS = [
+    {'co': 'ADM', 'st': 'IL', 'city': 'Decatur', 'nopa': 'Illinois', 'census': 'Illinois', 'rr': 'NS / CN *', 'daily_bu': 310000, 'lat': 39.8403, 'lon': -88.9548},
+    {'co': 'ADM', 'st': 'MO', 'city': 'Deerfield', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'BNSF', 'daily_bu': 100000, 'lat': 37.8384, 'lon': -94.508},
+    {'co': 'ADM', 'st': 'IA', 'city': 'Des Moines', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP / IAIS', 'daily_bu': 177000, 'lat': 41.5869, 'lon': -93.6249},
+    {'co': 'ADM (Swing Plant)', 'st': 'ND', 'city': 'Enderlin', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'CPKC', 'daily_bu': 40000, 'lat': 46.623, 'lon': -97.6015},
+    {'co': 'ADM', 'st': 'OH', 'city': 'Fostoria', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'CSXT / NS', 'daily_bu': 75000, 'lat': 41.1574, 'lon': -83.4141},
+    {'co': 'ADM', 'st': 'IN', 'city': 'Frankfort', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'NS / CN *', 'daily_bu': 125000, 'lat': 40.2795, 'lon': -86.5122},
+    {'co': 'ADM', 'st': 'NE', 'city': 'Freemont', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP', 'daily_bu': 70000, 'lat': 42.4674, 'lon': -96.4281},
+    {'co': 'ADM', 'st': 'NE', 'city': 'Lincoln', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP / BNSF *', 'daily_bu': 175000, 'lat': 40.8089, 'lon': -96.7078},
+    {'co': 'ADM', 'st': 'MN', 'city': 'Mankato', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'CPKC', 'daily_bu': 165000, 'lat': 44.1636, 'lon': -94.0067},
+    {'co': 'ADM', 'st': 'MO', 'city': 'Mexico', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'CPKC / NS', 'daily_bu': 75000, 'lat': 39.1698, 'lon': -91.8829},
+    {'co': 'ADM', 'st': 'IL', 'city': 'Quincy', 'nopa': 'Illinois', 'census': 'Illinois', 'rr': 'BNSF / NS *', 'daily_bu': 245000, 'lat': 39.9356, 'lon': -91.4099},
+    {'co': 'ADM/Marathon', 'st': 'ND', 'city': 'Spiritwood', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'BNSF', 'daily_bu': 150000, 'lat': 46.9336, 'lon': -98.4923},
+    {'co': 'ADM', 'st': 'GA', 'city': 'Valdosta', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'CSXT / NS *', 'daily_bu': 105000, 'lat': 30.8327, 'lon': -83.2785},
+    {'co': 'AGP', 'st': 'MN', 'city': 'Dawson', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'BNSF', 'daily_bu': 110000, 'lat': 44.9355, 'lon': -96.0558},
+    {'co': 'AGP', 'st': 'IA', 'city': 'Eagle Grove', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP', 'daily_bu': 120000, 'lat': 42.6641, 'lon': -93.9046},
+    {'co': 'AGP', 'st': 'IA', 'city': 'Emmetsburg', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP / CP', 'daily_bu': 90000, 'lat': 43.1108, 'lon': -94.6782},
+    {'co': 'AGP', 'st': 'NE', 'city': 'Hastings', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'BNSF / UP', 'daily_bu': 200000, 'lat': 40.5861, 'lon': -98.3899},
+    {'co': 'AGP', 'st': 'IA', 'city': 'Manning', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP', 'daily_bu': 90000, 'lat': 41.9094, 'lon': -95.0594},
+    {'co': 'AGP', 'st': 'IA', 'city': 'Mason City', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP / CP *', 'daily_bu': 90000, 'lat': 43.1536, 'lon': -93.201},
+    {'co': 'AGP', 'st': 'IA', 'city': 'Sgt. Bluff', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'BNSF / UP', 'daily_bu': 150000, 'lat': 42.4025, 'lon': -96.325},
+    {'co': 'AGP', 'st': 'IA', 'city': 'Sheldon', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP', 'daily_bu': 90000, 'lat': 43.183, 'lon': -95.8519},
+    {'co': 'AGP', 'st': 'MO', 'city': 'St. Joe', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP / BNSF', 'daily_bu': 150000, 'lat': 37.8013, 'lon': -90.5},
+    {'co': 'AGP', 'st': 'SD', 'city': 'Aberdeen', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'BNSF', 'daily_bu': 150000, 'lat': 45.465, 'lon': -98.4878},
+    {'co': 'AGP', 'st': 'NE', 'city': 'David City', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP / BNSF', 'daily_bu': 150000, 'lat': 41.2527, 'lon': -97.1301},
+    {'co': 'Bartlett Grain', 'st': 'KS', 'city': 'Cherryvale', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP / BNSF *', 'daily_bu': 130000, 'lat': 37.2694, 'lon': -95.553},
+    {'co': 'Bunge', 'st': 'OH', 'city': 'Bellevue', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'NS', 'daily_bu': 92000, 'lat': 41.2742, 'lon': -82.841},
+    {'co': 'Bunge', 'st': 'IL', 'city': 'Cairo', 'nopa': 'Illinois', 'census': 'Illinois', 'rr': 'CN', 'daily_bu': 135000, 'lat': 37.0053, 'lon': -89.1765},
+    {'co': 'Bunge', 'st': 'IA', 'city': 'Council Bluffs', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'BNSF / UP', 'daily_bu': 240000, 'lat': 41.2619, 'lon': -95.8608},
+    {'co': 'Bunge', 'st': 'IN', 'city': 'Decatur', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'CSXT / NS *', 'daily_bu': 135000, 'lat': 40.8303, 'lon': -84.9288},
+    {'co': 'Bunge', 'st': 'AL', 'city': 'Decatur', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'NS / CSXT', 'daily_bu': 150000, 'lat': 34.606, 'lon': -86.9838},
+    {'co': 'Bunge', 'st': 'OH', 'city': 'Delphos', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'BNSF / CN *', 'daily_bu': 65000, 'lat': 40.8437, 'lon': -84.3398},
+    {'co': 'Bunge', 'st': 'LA', 'city': 'Destrehan', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'UP / CPKC', 'daily_bu': 130000, 'lat': 29.9427, 'lon': -90.3665},
+    {'co': 'Bunge', 'st': 'KS', 'city': 'Emporia', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'BNSF', 'daily_bu': 90000, 'lat': 38.4039, 'lon': -96.1817},
+    {'co': 'Bunge', 'st': 'IN', 'city': 'Morristown', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'CSXT', 'daily_bu': 205000, 'lat': 39.6732, 'lon': -85.699},
+    {'co': 'Bunge', 'st': 'IL', 'city': 'Gibson City', 'nopa': 'Illinois', 'census': 'Illinois', 'rr': 'NS / CN *', 'daily_bu': 55000, 'lat': 40.4586, 'lon': -88.3595},
+    {'co': 'White River Soy Proc', 'st': 'IA', 'city': 'Creston', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'BNSF', 'daily_bu': 28000, 'lat': 41.0597, 'lon': -94.3619},
+    {'co': 'White River Soy Proc', 'st': 'IN', 'city': 'Seymour', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'N/A', 'daily_bu': 30000, 'lat': 38.9585, 'lon': -85.8903},
+    {'co': 'Cargill', 'st': 'IL', 'city': 'Bloomington', 'nopa': 'Illinois', 'census': 'Illinois', 'rr': 'UP', 'daily_bu': 50000, 'lat': 40.4842, 'lon': -88.9937},
+    {'co': 'Cargill', 'st': 'IA', 'city': 'Cedar Rapids', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP *', 'daily_bu': 150000, 'lat': 42.0084, 'lon': -91.6441},
+    {'co': 'Cargill', 'st': 'NC', 'city': 'Fayetteville', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'CSXT', 'daily_bu': 125000, 'lat': 35.0526, 'lon': -78.8783},
+    {'co': 'Cargill', 'st': 'GA', 'city': 'Gainesville', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'CSXT / NS', 'daily_bu': 100000, 'lat': 34.2979, 'lon': -83.8241},
+    {'co': 'Cargill', 'st': 'AL', 'city': 'Guntersville', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'CSXT / NS *', 'daily_bu': 95000, 'lat': 34.3581, 'lon': -86.2947},
+    {'co': 'Cargill', 'st': 'IA', 'city': 'Iowa Falls', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'CN / UP *', 'daily_bu': 95000, 'lat': 42.5224, 'lon': -93.2613},
+    {'co': 'Cargill', 'st': 'MO', 'city': 'Kansas City', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP/BNSF/NS *', 'daily_bu': 200000, 'lat': 39.1001, 'lon': -94.5781},
+    {'co': 'Cargill', 'st': 'IN', 'city': 'Lafayette', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'NS / CSXT', 'daily_bu': 85000, 'lat': 40.4191, 'lon': -86.8919},
+    {'co': 'Cargill', 'st': 'OH', 'city': 'Sidney', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'CSXT', 'daily_bu': 195000, 'lat': 40.2842, 'lon': -84.1555},
+    {'co': 'Cargill', 'st': 'IA', 'city': 'Sioux City', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'UP/BNSF/CN', 'daily_bu': 160000, 'lat': 42.4995, 'lon': -96.4003},
+    {'co': 'Cargill', 'st': 'KS', 'city': 'Wichita', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'BNSF / UP *', 'daily_bu': 105000, 'lat': 37.6872, 'lon': -97.3301},
+    {'co': 'Cargill', 'st': 'KY', 'city': 'Owensboro', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'CSXT', 'daily_bu': 150000, 'lat': 37.7719, 'lon': -87.1111},
+    {'co': 'NDSP / CGB', 'st': 'ND', 'city': 'Casselton', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'BNSF *', 'daily_bu': 125000, 'lat': 46.9005, 'lon': -97.2112},
+    {'co': 'CGB', 'st': 'IN', 'city': 'Mt Vernon', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'CSX/NS/BNSF*', 'daily_bu': 135000, 'lat': 37.9318, 'lon': -87.8948},
+    {'co': 'CHS', 'st': 'MN', 'city': 'Fairmont', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'UP', 'daily_bu': 240000, 'lat': 43.6516, 'lon': -94.4608},
+    {'co': 'CHS', 'st': 'MN', 'city': 'Mankato', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'CPKC', 'daily_bu': 140000, 'lat': 44.1636, 'lon': -94.0067},
+    {'co': 'Dreyfus', 'st': 'IN', 'city': 'Claypool', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'NS / CSXT', 'daily_bu': 175000, 'lat': 41.1258, 'lon': -85.8775},
+    {'co': 'Incobrasa', 'st': 'IL', 'city': 'Gilman', 'nopa': 'Illinois', 'census': 'Illinois', 'rr': 'CN *', 'daily_bu': 120000, 'lat': 40.7683, 'lon': -87.9956},
+    {'co': 'MnSP', 'st': 'MN', 'city': 'Brewster', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'UP', 'daily_bu': 115000, 'lat': 43.6939, 'lon': -95.4661},
+    {'co': 'Norfolk Crush', 'st': 'NE', 'city': 'Norfolk', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP *', 'daily_bu': 110000, 'lat': 42.0283, 'lon': -97.417},
+    {'co': 'Perdue', 'st': 'NC', 'city': 'Cofield', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'CSXT *', 'daily_bu': 40000, 'lat': 36.3565, 'lon': -76.91},
+    {'co': 'Perdue', 'st': 'PA', 'city': 'Bainbridge', 'nopa': 'IN, KY, OH, MI', 'census': 'North and East', 'rr': 'NS', 'daily_bu': 60000, 'lat': 40.0909, 'lon': -76.6675},
+    {'co': 'Perdue', 'st': 'VA', 'city': 'Chesapeake', 'nopa': 'Southeast', 'census': 'North and East', 'rr': 'CSXT / NS *', 'daily_bu': 85000, 'lat': 36.7168, 'lon': -76.2494},
+    {'co': 'Perdue', 'st': 'MD', 'city': 'Salisbury', 'nopa': 'Southeast', 'census': 'North and East', 'rr': 'NS *', 'daily_bu': 63000, 'lat': 38.3607, 'lon': -75.5996},
+    {'co': 'Platinum', 'st': 'IA', 'city': 'Alta', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'CN', 'daily_bu': 110000, 'lat': 42.6714, 'lon': -95.2947},
+    {'co': 'Riceland', 'st': 'AR', 'city': 'Stuttgart', 'nopa': 'Southeast', 'census': 'South, West, and Pacific', 'rr': 'UP *', 'daily_bu': 90000, 'lat': 34.5004, 'lon': -91.5526},
+    {'co': 'Scoular (Swing Plant)', 'st': 'KS', 'city': 'Goodland', 'nopa': 'Southwest', 'census': 'West Central', 'rr': 'UP / BNSF *', 'daily_bu': 35000, 'lat': 39.3486, 'lon': -101.7101},
+    {'co': 'Shell Rock/P66', 'st': 'IA', 'city': 'Shell Rock', 'nopa': 'Iowa', 'census': 'Iowa', 'rr': 'CN *', 'daily_bu': 110000, 'lat': 42.7088, 'lon': -92.5838},
+    {'co': 'SDSP', 'st': 'SD', 'city': 'Volga', 'nopa': 'MN, ND, SD, MT', 'census': 'North Central', 'rr': 'CPKC *', 'daily_bu': 95000, 'lat': 44.3236, 'lon': -96.9264},
+    {'co': 'Zeeland Farms', 'st': 'MI', 'city': 'Ithaca', 'nopa': 'IN, KY, OH, MI', 'census': 'North Central', 'rr': 'CN/CSXT/NS *', 'daily_bu': 135000, 'lat': 43.2945, 'lon': -84.6069},
+    {'co': 'Zeeland Farms', 'st': 'MI', 'city': 'Zeeland', 'nopa': 'IN, KY, OH, MI', 'census': 'North Central', 'rr': 'N/A', 'daily_bu': 35000, 'lat': 42.8128, 'lon': -86.0168},
+]
+
 # FSA Conservation Reserve Program enrollment — million acres by state abbreviation (or "US")
 # Source: USDA FSA CRPHistoryState86-25.xlsx (fiscal year = planting calendar year)
 _CRP_DATA: dict = {
@@ -335,15 +738,17 @@ DISPLAY_UNIT = {
     "Yield": "bu/ac",          "Prevent Planted Acres": "×100K ac",
 }
 
-# ── JPSI brand palette ────────────────────────────────────────────────────────
-DARK    = "#f5f7fa"
-PANEL   = "#edf1f7"
-SURFACE = "#e2e8f2"
-BORDER  = "#c8d5e3"
-TEXT    = "#1a2332"
-MUTED   = "#64748b"
-ACCENT  = "#0693e3"
-LAND    = "#dde8f0"
+# ── JPSI brand palette — light theme, matched to jpsi.com ───────────────────
+# Site white nav + dark green hero: #425248  |  Teal CTA: #5ba5af  |  Lime: #88b131
+DARK    = "#f4f8f5"   # near-white with green tint (app background)
+PANEL   = "#e8f0eb"   # light green-gray (sidebar, cards)
+SURFACE = "#ddeae1"   # slightly deeper green-gray (hover/alternates)
+BORDER  = "#b8d0be"   # soft green border
+TEXT    = "#1e2e22"   # near-black with green tint (body text)
+MUTED   = "#4a6a54"   # medium green-gray (muted text)
+ACCENT  = "#3d8f99"   # JPSI teal (slightly deepened for light bg readability)
+ACCENT2 = "#6a9a20"   # JPSI lime green (deepened for light bg contrast)
+LAND    = "#c8dccb"   # light sage green land mass (maps)
 
 
 # ── RMA Data ──────────────────────────────────────────────────────────────────
@@ -1663,41 +2068,66 @@ def load_livestock(agg_level: str, species_key: str, year: int,
 @st.cache_data(show_spinner=False)
 def load_livestock_hist(species_key: str,
                         cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
-    """Fetch all-years STATE-level livestock inventory (2000-present) in one call."""
+    """Fetch all-years STATE-level livestock inventory (2000-present).
+
+    Tries with the canonical reference_period_desc first; if NASS returns
+    nothing (discontinued surveys, poultry census-only series, etc.) retries
+    without the period filter to capture whatever periods exist.
+    """
     period = _LIVESTOCK_PERIOD.get(species_key, "JAN 1")
     _spec = dict(_LIVESTOCK_SPECIES[species_key])
     _stat_cat  = _spec.pop("_stat", "INVENTORY")
     _unit_desc = _spec.pop("_unit", "HEAD")
-    params: dict = {
-        "key":                   NASS_API_KEY,
-        "source_desc":           "SURVEY",
-        "sector_desc":           "ANIMALS & PRODUCTS",
-        "statisticcat_desc":     _stat_cat,
-        "unit_desc":             _unit_desc,
-        "agg_level_desc":        "STATE",
-        "reference_period_desc": period,
-        "year__GE":              "2000",
-        "format":                "JSON",
+
+    base_params: dict = {
+        "key":               NASS_API_KEY,
+        "source_desc":       "SURVEY",
+        "sector_desc":       "ANIMALS & PRODUCTS",
+        "statisticcat_desc": _stat_cat,
+        "unit_desc":         _unit_desc,
+        "agg_level_desc":    "STATE",
+        "year__GE":          "2000",
+        "format":            "JSON",
     }
-    params.update(_spec)
-    try:
-        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
-        with urllib.request.urlopen(url, timeout=30) as r:
-            data = json.loads(r.read())
-        rows = data.get("data", [])
-    except Exception:
-        return pd.DataFrame()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    if "Value" not in df.columns:
-        return pd.DataFrame()
-    df["Value"] = pd.to_numeric(
-        df["Value"].astype(str).str.replace(",", "", regex=False).str.strip(),
-        errors="coerce",
-    )
-    df["year"] = pd.to_numeric(df.get("year", pd.Series(dtype=float)), errors="coerce")
-    return df.dropna(subset=["Value", "year"])
+    base_params.update(_spec)
+
+    def _fetch(params: dict) -> pd.DataFrame:
+        try:
+            url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+            with urllib.request.urlopen(url, timeout=30) as r:
+                data = json.loads(r.read())
+            rows = data.get("data", [])
+        except Exception:
+            return pd.DataFrame()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        if "Value" not in df.columns:
+            return pd.DataFrame()
+        df["Value"] = pd.to_numeric(
+            df["Value"].astype(str).str.replace(",", "", regex=False).str.strip(),
+            errors="coerce",
+        )
+        df["year"] = pd.to_numeric(
+            df.get("year", pd.Series(dtype=float)), errors="coerce"
+        )
+        return df.dropna(subset=["Value", "year"])
+
+    # First attempt: with canonical period
+    df = _fetch({**base_params, "reference_period_desc": period})
+    if not df.empty:
+        return df
+
+    # Retry without period constraint (catches annual/discontinued series)
+    df = _fetch(base_params)
+    if not df.empty:
+        # Keep only the most common reference period to avoid double-counting
+        if "reference_period_desc" in df.columns:
+            top_period = df["reference_period_desc"].value_counts().idxmax()
+            df = df[df["reference_period_desc"] == top_period]
+        return df
+
+    return pd.DataFrame()
 
 
 @st.cache_data(show_spinner=False)
@@ -1737,6 +2167,89 @@ def load_livestock_county_hist(species_key: str, state_alpha: str,
     )
     df["year"] = pd.to_numeric(df.get("year", pd.Series(dtype=float)), errors="coerce")
     return df.dropna(subset=["Value", "year"])
+
+
+@st.cache_data(show_spinner=False)
+def load_aquaculture_nass(species_key: str, year: int,
+                          agg_level: str = "STATE",
+                          state_alpha: str = "",
+                          cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
+    """Fetch NASS Census of Aquaculture sales data by state."""
+    params: dict = {
+        "key":               NASS_API_KEY,
+        "source_desc":       "CENSUS",
+        "sector_desc":       "ANIMALS & PRODUCTS",
+        "group_desc":        "AQUACULTURE",
+        "statisticcat_desc": "SALES & DISTRIBUTION",
+        "unit_desc":         "$",
+        "domain_desc":       "TOTAL",
+        "agg_level_desc":    agg_level,
+        "year":              str(year),
+        "format":            "JSON",
+    }
+    params.update(_AQUA_SPECIES[species_key])
+    if state_alpha:
+        params["state_alpha"] = state_alpha
+    try:
+        url = NASS_BASE_URL + "?" + urllib.parse.urlencode(params)
+        with urllib.request.urlopen(url, timeout=25) as r:
+            data = json.loads(r.read())
+        rows = data.get("data", [])
+    except Exception:
+        return pd.DataFrame()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if "Value" not in df.columns:
+        return pd.DataFrame()
+    df["Value"] = pd.to_numeric(
+        df["Value"].astype(str).str.replace(",", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+    return df.dropna(subset=["Value"])
+
+
+@st.cache_data(show_spinner=False)
+def load_echo_aquaculture(cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
+    """Fetch EPA ECHO NPDES-permitted aquaculture facilities (SIC 0921, 0273)."""
+    try:
+        with urllib.request.urlopen(_ECHO_AQUA_URL, timeout=30) as r:
+            data = json.loads(r.read())
+    except Exception:
+        return pd.DataFrame()
+    facilities: list = []
+    if isinstance(data, dict):
+        results = data.get("Results", data)
+        if isinstance(results, dict):
+            for _k in ("Facilities", "FacilityList", "facilities"):
+                if _k in results:
+                    facilities = results[_k]
+                    break
+        elif isinstance(results, list):
+            facilities = results
+    elif isinstance(data, list):
+        facilities = data
+    if not facilities:
+        return pd.DataFrame()
+    rows: list = []
+    for f in facilities:
+        if not isinstance(f, dict):
+            continue
+        try:
+            lat = float(f.get("FacLat") or f.get("FAC_LAT") or 0)
+            lon = float(f.get("FacLong") or f.get("FAC_LONG") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not lat or not lon:
+            continue
+        rows.append({
+            "name":   str(f.get("FacName") or f.get("FAC_NAME", "")),
+            "state":  str(f.get("FacState") or f.get("FAC_STATE", "")),
+            "county": str(f.get("FacCounty") or f.get("FAC_COUNTY", "")),
+            "lat":    lat,
+            "lon":    lon,
+        })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
 def _render_acreage_html(rows: list, years: list,
@@ -3018,38 +3531,94 @@ def _lv_auto_scale(mx: float, base_unit: str) -> tuple:
     return 1, base_unit
 
 
+# ── Watermark helpers ─────────────────────────────────────────────────────────
+_st_plotly_chart = st.plotly_chart  # saved before _chart shadows the call site
+
+
+def _add_wm(fig: "go.Figure") -> "go.Figure":
+    """Add a subtle JSA watermark annotation to a Plotly figure."""
+    fig.add_annotation(
+        text="JSA",
+        xref="paper", yref="paper",
+        x=0.5, y=0.5,
+        showarrow=False,
+        font=dict(size=80, color="rgba(66,82,72,0.05)", family="Arial Black, Arial"),
+        textangle=-30,
+    )
+    return fig
+
+
+def _chart(fig, **kw) -> None:
+    """Wrapper around st.plotly_chart that applies the JSA watermark."""
+    _st_plotly_chart(_add_wm(fig), **kw)
+
+
 # ── App ────────────────────────────────────────────────────────────────────────
 def main():
     st.markdown(
         f"""
         <style>
+        /* ── JPSI brand theme — jpsi.com palette ─────────────────── */
         .stApp {{ background-color: {DARK}; color: {TEXT}; }}
-        [data-testid="stSidebar"] {{ background-color: {PANEL}; border-right: 1px solid {BORDER}; }}
+        [data-testid="stSidebar"] {{
+            background-color: {PANEL};
+            border-right: 1px solid {BORDER};
+        }}
         .block-container {{ padding-top: 1rem; max-width: 1400px; }}
+        /* headings — teal accent */
         h1, h2, h3 {{ color: {ACCENT} !important; letter-spacing: 0.02em; }}
+        h4, h5, h6 {{ color: {TEXT} !important; }}
         p, label, .stCaption, [data-testid="stCaptionContainer"] {{ color: {MUTED} !important; }}
+        /* dropdowns / selects */
         [data-testid="stSelectbox"] label {{ color: {MUTED} !important; font-size: 0.8rem; }}
         div[data-baseweb="select"] > div {{
-            background-color: {PANEL} !important; border-color: {BORDER} !important; color: {TEXT} !important;
+            background-color: {PANEL} !important;
+            border-color: {BORDER} !important;
+            color: {TEXT} !important;
         }}
         div[data-baseweb="popover"] * {{ background-color: {PANEL} !important; color: {TEXT} !important; }}
+        /* multiselect tags */
+        [data-baseweb="tag"] {{
+            background-color: {SURFACE} !important;
+            border: 1px solid {BORDER} !important;
+        }}
+        /* metric cards */
         [data-testid="metric-container"] {{
-            background-color: {PANEL}; border: 1px solid {BORDER};
-            border-radius: 8px; padding: 12px 16px;
+            background-color: {PANEL};
+            border: 1px solid {BORDER};
+            border-left: 3px solid {ACCENT};
+            border-radius: 8px;
+            padding: 12px 16px;
         }}
         [data-testid="stMetricValue"] {{ color: {ACCENT} !important; font-size: 1.35rem; font-weight: 700; }}
         [data-testid="stMetricLabel"] {{
             color: {MUTED} !important; font-size: 0.78rem;
             text-transform: uppercase; letter-spacing: 0.06em;
         }}
+        [data-testid="stMetricDelta"] svg {{ fill: {ACCENT2} !important; }}
+        /* expanders & tables */
         [data-testid="stExpander"] {{ background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}
-        [data-testid="stDataFrame"] {{ background-color: {PANEL}; }}
+        [data-testid="stDataFrame"] {{
+            background-color: {PANEL};
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='130'%3E%3Ctext transform='rotate(-30 130 65)' x='55' y='88' font-family='Arial Black%2CArial' font-size='44' font-weight='900' fill='rgba(66%2C82%2C72%2C0.04)'%3EJSA%3C/text%3E%3C/svg%3E");
+            background-repeat: repeat;
+        }}
         hr {{ border-color: {BORDER}; }}
         [data-testid="stSpinner"] p {{ color: {MUTED} !important; }}
-        .stTabs [data-baseweb="tab-list"] {{ background-color: {PANEL}; border-radius: 6px 6px 0 0; gap: 4px; }}
+        /* tabs — active tab gets lime underline, text switches to teal */
+        .stTabs [data-baseweb="tab-list"] {{
+            background-color: {PANEL};
+            border-radius: 6px 6px 0 0;
+            gap: 4px;
+            border-bottom: 2px solid {BORDER};
+        }}
         .stTabs [data-baseweb="tab"] {{ color: {MUTED}; font-size: 0.92rem; padding: 8px 20px; }}
-        .stTabs [aria-selected="true"] {{ color: {ACCENT} !important; border-bottom: 2px solid {ACCENT} !important; }}
-        /* NASS view toggle — style horizontal radio as a button group */
+        .stTabs [aria-selected="true"] {{
+            color: {ACCENT} !important;
+            border-bottom: 3px solid {ACCENT2} !important;
+            font-weight: 600 !important;
+        }}
+        /* radio button-group toggle */
         div[data-testid="stRadio"] > label {{ display: none; }}
         div[data-testid="stRadio"] > div[role="radiogroup"] {{
             display: flex; flex-direction: row; gap: 6px; flex-wrap: wrap;
@@ -3066,19 +3635,28 @@ def main():
             margin: 0 !important;
         }}
         div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {{
-            border-color: {ACCENT} !important;
-            color: {ACCENT} !important;
+            border-color: {ACCENT2} !important;
+            color: {ACCENT2} !important;
             background-color: {SURFACE} !important;
         }}
         div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {{
             display: none !important;
         }}
+        /* app title bar */
+        [data-testid="stHeader"] {{ background-color: {DARK} !important; border-bottom: 1px solid {BORDER}; }}
+        /* info/warning boxes */
+        [data-testid="stAlert"] {{ background-color: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; }}
+        /* scrollbar */
+        ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+        ::-webkit-scrollbar-track {{ background: {DARK}; }}
+        ::-webkit-scrollbar-thumb {{ background: {BORDER}; border-radius: 3px; }}
+        ::-webkit-scrollbar-thumb:hover {{ background: {ACCENT}; }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    st.title("USDA County Production Dashboard")
+    st.title("JSA Agricultural Intelligence Dashboard")
     st.markdown(
         f"""<p style='color:{MUTED};font-size:0.80rem;margin-top:-10px;margin-bottom:6px;line-height:1.6;'>
         ℹ️ <b style='color:{TEXT};'>NASS tab</b>: USDA survey-based final production figures (post-harvest, all acres). &nbsp;|&nbsp;
@@ -3109,9 +3687,12 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_livestock, tab_about = st.tabs([
+    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_livestock, tab_aqua, tab_proc, tab_wcmd, tab_storage_cmp, tab_about = st.tabs([
         "🌾  NASS Production", "📋  RMA",
-        "📦  Grain Stocks", "🌱  Acreage Summary", "🐄  Livestock", "📖  About the Data",
+        "📦  Grain Stocks", "🌱  Acreage Summary", "🐄  Livestock",
+        "🐟  Aquaculture", "🏭  Processing",
+        "🏦  Grain Warehouses", "⚖️  Storage vs. Production",
+        "📖  About the Data",
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3321,7 +3902,7 @@ def main():
                             landcolor=LAND,
                         ),
                     )
-                    st.plotly_chart(nass_fig, use_container_width=True,
+                    _chart(nass_fig, use_container_width=True,
                                     key="nass_state_map",
                                     config={
                                         "scrollZoom":    False,
@@ -3601,7 +4182,7 @@ def main():
                                         f"{ABBR_TO_NAME.get(nass_state, nass_state)}.")
                             else:
                                 nass_dist_fig.update_layout(dragmode=False)
-                                st.plotly_chart(nass_dist_fig, use_container_width=True,
+                                _chart(nass_dist_fig, use_container_width=True,
                                                 key="nass_district_map",
                                                 config={"scrollZoom": False,
                                                         "displayModeBar": False,
@@ -3641,7 +4222,7 @@ def main():
                             )
                         else:
                             nass_county_fig.update_layout(dragmode=False)
-                            st.plotly_chart(nass_county_fig, use_container_width=True,
+                            _chart(nass_county_fig, use_container_width=True,
                                             key="nass_county_map",
                                             config={"scrollZoom": False,
                                                     "displayModeBar": False,
@@ -3752,7 +4333,7 @@ def main():
                         title=f"{_scope_label} — {nass_crop} {nass_metric}",
                         y_label=_nc_y_lbl,
                     )
-                    st.plotly_chart(_nc_fig, use_container_width=True,
+                    _chart(_nc_fig, use_container_width=True,
                                     key="nass_hist_chart",
                                     config={"displayModeBar": False})
 
@@ -4059,7 +4640,7 @@ def main():
                             total_label=f"{nass_state} Total",
                         )
 
-                    st.plotly_chart(_nt_fig, use_container_width=True,
+                    _chart(_nt_fig, use_container_width=True,
                                     key="nass_heatmap_tbl",
                                     config={"displayModeBar": False})
 
@@ -4128,7 +4709,7 @@ def main():
                                         top_row_cell_status=_dist_top_cs,
                                         total_label=f"{nass_state} Total",
                                     )
-                                    st.plotly_chart(
+                                    _chart(
                                         _cty_fig, use_container_width=True,
                                         key=f"cty_tbl_{_dist_name}",
                                         config={"displayModeBar": False},
@@ -4199,7 +4780,7 @@ def main():
                                 state_county_v, nass_state, nass_crop, nass_year,
                                 nass_metric, nass_change,
                             )
-                        st.plotly_chart(ranking_nass, use_container_width=True,
+                        _chart(ranking_nass, use_container_width=True,
                                         key="nass_ranking")
 
                     # ── County Data Table ─────────────────────────────────────
@@ -4328,7 +4909,7 @@ def main():
             agg = agg_data(df, practice, metric, ["State"])
             fig = build_state_fig(agg, metric, crop_label, practice, logo_50yr)
             fig.update_layout(dragmode=False)
-            st.plotly_chart(fig, use_container_width=True, key="rma_state_map",
+            _chart(fig, use_container_width=True, key="rma_state_map",
                             config={"scrollZoom": False, "displayModeBar": False,
                                     "doubleClick": False})
             st.caption("Use the State Drill-Down dropdown above to view county detail.")
@@ -4353,7 +4934,7 @@ def main():
                     st.info(f"County map not available for {ABBR_TO_NAME.get(state, state)}.")
                 else:
                     fig.update_layout(dragmode=False)
-                    st.plotly_chart(fig, use_container_width=True, key="rma_county_map",
+                    _chart(fig, use_container_width=True, key="rma_county_map",
                                     config={"scrollZoom": False, "displayModeBar": False,
                                             "doubleClick": False})
                     st.caption("Use ← Back to US Map to return to the national overview.")
@@ -4362,7 +4943,7 @@ def main():
             st.markdown(f"<hr style='border-color:{BORDER};margin:8px 0'>",
                         unsafe_allow_html=True)
             ranking_fig = build_ranking_chart(agg, metric, state)
-            st.plotly_chart(ranking_fig, use_container_width=True, key="rma_ranking_chart")
+            _chart(ranking_fig, use_container_width=True, key="rma_ranking_chart")
 
             with st.expander(f"County Data Table — {state_name}", expanded=False):
                 disp = agg.sort_values(col, ascending=False).copy()
@@ -4624,7 +5205,7 @@ def main():
                     showlegend=False, hoverinfo="skip", geo="geo",
                 ))
             _add_logo(stk_fig, logo_50yr, size=0.30, opacity=1.0)
-            st.plotly_chart(stk_fig, use_container_width=True, key="stk_map",
+            _chart(stk_fig, use_container_width=True, key="stk_map",
                             config={"scrollZoom": False, "displayModeBar": False,
                                     "doubleClick": False})
 
@@ -4701,7 +5282,7 @@ def main():
                     title=f"US {stk_crop} {stk_view} — {stk_period_lbl}",
                     y_label=_sl,
                 )
-            st.plotly_chart(_chart_fig, use_container_width=True, key="stk_chart",
+            _chart(_chart_fig, use_container_width=True, key="stk_chart",
                             config={"displayModeBar": False})
 
             st.markdown(f"<hr style='border-color:{BORDER};margin:6px 0'>",
@@ -4753,7 +5334,7 @@ def main():
                 regions=None,       # no crop-specific regions for stocks
                 fmt=".1f",          # 1 decimal = nearest 100K bu in M bu units
             )
-            st.plotly_chart(_stk_htbl, use_container_width=True,
+            _chart(_stk_htbl, use_container_width=True,
                             key="stk_heatmap_tbl",
                             config={"displayModeBar": False})
             st.caption(
@@ -5012,7 +5593,7 @@ def main():
                     zeroline=False, tickfont=dict(size=10),
                 ),
             )
-            st.plotly_chart(_cfig, use_container_width=True)
+            _chart(_cfig, use_container_width=True)
 
     # ══════════════════════════════════════════════════════════════════════════
     # LIVESTOCK INVENTORY TAB
@@ -5071,6 +5652,27 @@ def main():
             _lv_sdiv, _lv_sunit = _lv_auto_scale(_lv_smx, _lv_base_unit)
             _lv_st_agg["Display"] = _lv_st_agg["Value"] / _lv_sdiv
 
+            # state centroid lookup for data labels
+            _LV_STATE_CTR = {
+                'AL':(32.79,-86.83),'AK':(64.20,-153.37),'AZ':(34.30,-111.09),
+                'AR':(34.75,-92.13),'CA':(36.78,-119.42),'CO':(39.55,-105.78),
+                'CT':(41.60,-72.70),'DE':(39.15,-75.40),'FL':(27.77,-81.69),
+                'GA':(32.68,-83.44),'HI':(20.90,-157.40),'ID':(44.07,-114.74),
+                'IL':(40.35,-88.99),'IN':(39.85,-86.26),'IA':(42.01,-93.21),
+                'KS':(38.53,-96.73),'KY':(37.67,-84.67),'LA':(31.17,-91.87),
+                'ME':(44.69,-69.38),'MD':(38.97,-76.69),'MA':(42.23,-71.53),
+                'MI':(43.33,-84.54),'MN':(46.28,-94.31),'MS':(32.74,-89.67),
+                'MO':(38.46,-92.29),'MT':(46.88,-110.36),'NE':(41.49,-99.90),
+                'NV':(39.32,-116.63),'NH':(43.45,-71.58),'NJ':(40.03,-74.52),
+                'NM':(34.84,-106.25),'NY':(42.77,-75.49),'NC':(35.54,-79.39),
+                'ND':(47.45,-100.47),'OH':(40.42,-82.79),'OK':(35.59,-96.93),
+                'OR':(44.57,-122.07),'PA':(40.60,-77.21),'RI':(41.68,-71.51),
+                'SC':(33.84,-80.90),'SD':(44.37,-100.35),'TN':(35.85,-86.35),
+                'TX':(31.05,-97.56),'UT':(39.32,-111.09),'VT':(44.07,-72.67),
+                'VA':(37.43,-78.66),'WA':(47.38,-120.44),'WV':(38.65,-80.62),
+                'WI':(44.27,-89.62),'WY':(42.96,-107.55),
+            }
+
             _lv_us_fig = px.choropleth(
                 _lv_st_agg,
                 locations="State", locationmode="USA-states",
@@ -5080,13 +5682,35 @@ def main():
                 hover_data={"Display": ":.2f", "State": False},
                 labels={"Display": f"{_lv_species} ({_lv_sunit})"},
             )
+
+            # build label text: "ST\nXXX K" (abbr + formatted value)
+            def _lv_fmt(v):
+                if v >= 1_000_000: return f"{v/1_000_000:.1f}M"
+                if v >= 1_000: return f"{v/1_000:.0f}K"
+                return f"{v:.0f}"
+
+            _lbl_rows = _lv_st_agg[_lv_st_agg["State"].isin(_LV_STATE_CTR)].copy()
+            _lv_us_fig.add_trace(go.Scattergeo(
+                lat=[_LV_STATE_CTR[s][0] for s in _lbl_rows["State"]],
+                lon=[_LV_STATE_CTR[s][1] for s in _lbl_rows["State"]],
+                text=[
+                    f"<b>{s}</b><br>{_lv_fmt(v)}"
+                    for s, v in zip(_lbl_rows["State"], _lbl_rows["Value"])
+                ],
+                mode="text",
+                textfont=dict(size=9, color="#1e2e22", family="Arial Black"),
+                hoverinfo="skip",
+                showlegend=False,
+            ))
+
             _lv_us_fig.update_layout(
-                height=400,
+                height=420,
                 margin=dict(l=0, r=0, t=10, b=0),
                 paper_bgcolor=PANEL,
                 geo=dict(
-                    bgcolor=PANEL, lakecolor="#1a4060",
-                    showlakes=True, showframe=False,
+                    bgcolor=DARK, landcolor=LAND,
+                    showlakes=True, lakecolor="#aacdd4",
+                    showframe=False, scope="usa",
                 ),
                 coloraxis_colorbar=dict(
                     title=dict(text=_lv_sunit, font=dict(size=11, color=TEXT)),
@@ -5095,9 +5719,10 @@ def main():
                 ),
             )
             _lv_us_fig.update_traces(
-                marker_line_color="#3a4a5a", marker_line_width=0.5
+                marker_line_color=BORDER, marker_line_width=0.5,
+                selector=dict(type="choropleth"),
             )
-            st.plotly_chart(_lv_us_fig, use_container_width=True, key="lv_us_map")
+            _chart(_lv_us_fig, use_container_width=True, key="lv_us_map")
 
         # ── State drill-down ──────────────────────────────────────────────────
         if _lv_state_abbr:
@@ -5208,7 +5833,7 @@ def main():
                                 fitbounds="locations", resolution=50,
                             ),
                         )
-                        st.plotly_chart(_lv_co_fig, use_container_width=True,
+                        _chart(_lv_co_fig, use_container_width=True,
                                         key="lv_co_map")
 
                         # Ranked table
@@ -5312,7 +5937,7 @@ def main():
                                 gridcolor=BORDER, zeroline=False,
                             ),
                         )
-                        st.plotly_chart(_lv_ch_fig, use_container_width=True,
+                        _chart(_lv_ch_fig, use_container_width=True,
                                         key="lv_county_hist_chart")
 
                         _lv_ch_tbl = _lv_co_ts[["year", "Display"]].copy()
@@ -5404,7 +6029,7 @@ def main():
                                 fitbounds="locations", resolution=50,
                             ),
                         )
-                        st.plotly_chart(_lv_asd_fig, use_container_width=True,
+                        _chart(_lv_asd_fig, use_container_width=True,
                                         key="lv_asd_map")
 
                     # ASD bar chart (always shown)
@@ -5433,7 +6058,7 @@ def main():
                         hovertemplate="%{y}: %{x:,.1f} " + _lv_aunit
                                       + "<extra></extra>"
                     )
-                    st.plotly_chart(_lv_bar_fig, use_container_width=True,
+                    _chart(_lv_bar_fig, use_container_width=True,
                                     key="lv_asd_bar")
 
         # ── Historical trend chart ────────────────────────────────────────────
@@ -5535,7 +6160,7 @@ def main():
                     zeroline=False,
                 ),
             )
-            st.plotly_chart(_lv_tfig, use_container_width=True, key="lv_trend")
+            _chart(_lv_tfig, use_container_width=True, key="lv_trend")
 
         st.markdown(
             f"<p style='font-size:0.7rem;color:{MUTED};margin-top:12px;'>"
@@ -5546,6 +6171,527 @@ def main():
         )
 
     # ══════════════════════════════════════════════════════════════════════════
+    # AQUACULTURE TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_aqua:
+        st.markdown(
+            f"<h3 style='color:{ACCENT};margin-top:0;margin-bottom:4px;'>"
+            "Aquaculture — NASS Census &amp; EPA Facilities</h3>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "USDA NASS Census of Aquaculture sales by state (Census years) · "
+            "EPA ECHO NPDES-permitted facility locations."
+        )
+
+        # ── Controls ──────────────────────────────────────────────────────────
+        _aq_c1, _aq_c2, _aq_c3 = st.columns([2, 2, 2])
+        with _aq_c1:
+            _aq_species = st.selectbox(
+                "Species", list(_AQUA_SPECIES.keys()), key="aq_species"
+            )
+        with _aq_c2:
+            _aq_year = st.selectbox("Census Year", _AQUA_YEARS, key="aq_year")
+        with _aq_c3:
+            _aq_state_opts = ["All States"] + sorted(ABBR_TO_NAME.keys())
+            _aq_state_sel  = st.selectbox("State Filter", _aq_state_opts, key="aq_state")
+            _aq_state = "" if _aq_state_sel == "All States" else _aq_state_sel
+
+        st.markdown("---")
+
+        # ── NASS State Choropleth ─────────────────────────────────────────────
+        st.markdown(
+            f"<h4 style='color:{ACCENT};margin-bottom:4px;'>"
+            "NASS Census of Aquaculture — Sales by State</h4>",
+            unsafe_allow_html=True,
+        )
+        with st.spinner("Loading NASS aquaculture data…"):
+            _aq_df = load_aquaculture_nass(
+                _aq_species, _aq_year, cache_ver=_CACHE_VERSION
+            )
+
+        if _aq_df.empty:
+            st.info(
+                f"No NASS data returned for **{_aq_species}** in {_aq_year}. "
+                "The Census of Aquaculture is most complete for 2017 and 2022; "
+                "some species have limited state coverage."
+            )
+        else:
+            _aq_st = (
+                _aq_df
+                .groupby("state_alpha", as_index=False)["Value"].sum()
+                .rename(columns={"state_alpha": "State"})
+            )
+            _aq_st["StateName"] = _aq_st["State"].map(ABBR_TO_NAME)
+            _aq_st = _aq_st.dropna(subset=["StateName"])
+
+            _aq_mx = float(_aq_st["Value"].max()) if not _aq_st.empty else 0.0
+            if _aq_mx >= 500e6:
+                _aq_div, _aq_unit = 1e9, "B $"
+            elif _aq_mx >= 500e3:
+                _aq_div, _aq_unit = 1e6, "M $"
+            elif _aq_mx >= 500:
+                _aq_div, _aq_unit = 1e3, "K $"
+            else:
+                _aq_div, _aq_unit = 1.0, "$"
+            _aq_st["Display"] = _aq_st["Value"] / _aq_div
+
+            _aq_choro = go.Figure(go.Choropleth(
+                locations=_aq_st["State"],
+                z=_aq_st["Display"],
+                locationmode="USA-states",
+                colorscale=[[0,"#1a2d1e"],[0.4,"#425248"],[0.7,"#5ba5af"],[1,"#88b131"]],
+                text=_aq_st["StateName"],
+                hovertemplate=(
+                    "<b>%{text}</b><br>Sales: %{z:,.2f} "
+                    + _aq_unit + "<extra></extra>"
+                ),
+                colorbar=dict(
+                    title=dict(text=_aq_unit, side="right"),
+                    thickness=14,
+                    len=0.7,
+                ),
+                marker_line_color="white",
+                marker_line_width=0.5,
+            ))
+            if _aq_state:
+                _aq_sel = _aq_st[_aq_st["State"] == _aq_state]
+                if not _aq_sel.empty:
+                    _aq_choro.add_trace(go.Choropleth(
+                        locations=[_aq_state],
+                        z=[_aq_sel["Display"].iloc[0]],
+                        locationmode="USA-states",
+                        colorscale=[[0, ACCENT], [1, ACCENT]],
+                        showscale=False,
+                        marker_line_width=3,
+                        marker_line_color="white",
+                    ))
+            _aq_choro.update_layout(
+                height=380,
+                margin=dict(l=0, r=0, t=20, b=0),
+                geo=dict(
+                    scope="usa",
+                    projection_type="albers usa",
+                    showlakes=True,
+                    lakecolor="rgba(200,220,240,0.4)",
+                    showland=True,
+                    landcolor=LAND,
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=TEXT),
+            )
+            _chart(_aq_choro, use_container_width=True, key="aq_choro")
+
+            # Top-states bar chart
+            _n_bars = min(15, len(_aq_st))
+            _aq_top = _aq_st.nlargest(_n_bars, "Value").sort_values("Display", ascending=True)
+            _aq_bar = go.Figure(go.Bar(
+                x=_aq_top["Display"],
+                y=_aq_top["StateName"],
+                orientation="h",
+                marker_color=ACCENT,
+                text=[f"{v:,.1f}" for v in _aq_top["Display"]],
+                textposition="outside",
+                hovertemplate=(
+                    "<b>%{y}</b><br>Sales: %{x:,.2f} " + _aq_unit + "<extra></extra>"
+                ),
+            ))
+            _aq_bar.update_layout(
+                title=dict(
+                    text=f"Top States — {_aq_species} Sales ({_aq_unit}), {_aq_year}",
+                    font=dict(size=13, color=TEXT),
+                    x=0,
+                ),
+                height=max(260, 34 * _n_bars + 60),
+                margin=dict(l=0, r=60, t=40, b=0),
+                xaxis=dict(
+                    title=f"Sales ({_aq_unit})",
+                    gridcolor=SURFACE,
+                    zeroline=False,
+                ),
+                yaxis=dict(tickfont=dict(size=11)),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=TEXT),
+            )
+            _chart(_aq_bar, use_container_width=True, key="aq_bar")
+
+        st.markdown(
+            f"<p style='font-size:0.7rem;color:{MUTED};margin-top:4px;'>"
+            "Source: USDA NASS QuickStats — Census of Agriculture, Census of Aquaculture. "
+            "Sales measured in dollars; withheld values (D) excluded. "
+            "Census years with coverage: 2007, 2012, 2017, 2022.</p>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("---")
+
+        # ── EPA ECHO Facility Map ─────────────────────────────────────────────
+        st.markdown(
+            f"<h4 style='color:{ACCENT};margin-bottom:2px;'>"
+            "EPA ECHO — Permitted Aquaculture Facilities</h4>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Facilities holding NPDES discharge permits under SIC 0921 "
+            "(Fish Hatcheries &amp; Preserves) or SIC 0273 (Animal Aquaculture) — active permits only."
+        )
+        with st.spinner("Loading EPA ECHO facility data…"):
+            _echo_df = load_echo_aquaculture(cache_ver=_CACHE_VERSION)
+
+        if _echo_df.empty:
+            st.info(
+                "EPA ECHO facility data is unavailable or returned no results. "
+                "The ECHO API may be temporarily offline — try refreshing later. "
+                "Note: closed-loop / recirculating systems without NPDES permits are not listed."
+            )
+        else:
+            _echo_plot = (
+                _echo_df[_echo_df["state"] == _aq_state] if _aq_state else _echo_df
+            )
+            _echo_fig = go.Figure(go.Scattergeo(
+                lat=_echo_plot["lat"],
+                lon=_echo_plot["lon"],
+                text=_echo_plot["name"],
+                customdata=(
+                    _echo_plot["state"].astype(str)
+                    + " · " + _echo_plot["county"].astype(str)
+                ),
+                mode="markers",
+                marker=dict(
+                    size=5,
+                    color=ACCENT,
+                    opacity=0.7,
+                    line=dict(width=0),
+                ),
+                hovertemplate="<b>%{text}</b><br>%{customdata}<extra></extra>",
+            ))
+            _echo_fig.update_layout(
+                height=420,
+                margin=dict(l=0, r=0, t=10, b=0),
+                geo=dict(
+                    scope="usa",
+                    projection_type="albers usa",
+                    showlakes=True,
+                    lakecolor="rgba(200,220,240,0.4)",
+                    showland=True,
+                    landcolor=LAND,
+                    bgcolor="rgba(0,0,0,0)",
+                ),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=TEXT),
+            )
+            _chart(_echo_fig, use_container_width=True, key="aq_echo")
+            _echo_loc = (
+                f" in {ABBR_TO_NAME.get(_aq_state, _aq_state)}" if _aq_state else " nationwide"
+            )
+            st.caption(
+                f"{len(_echo_plot):,} facilities shown{_echo_loc} "
+                f"(of {len(_echo_df):,} total)"
+            )
+
+        st.markdown(
+            f"<p style='font-size:0.7rem;color:{MUTED};margin-top:4px;'>"
+            "Source: EPA Enforcement and Compliance History Online (ECHO), "
+            "CWA NPDES permits. "
+            "Only facilities with active discharge permits are shown; "
+            "recirculating / closed-loop systems without NPDES permits are not included. "
+            "SIC 0921: Fish Hatcheries &amp; Preserves · SIC 0273: Animal Aquaculture.</p>",
+            unsafe_allow_html=True,
+        )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PROCESSING PLANTS TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_proc:
+        ACCENT_local = ACCENT
+        st.markdown(
+            f"<h3 style='color:{ACCENT_local};margin-top:0;margin-bottom:4px;'>"
+            "🏭 Corn &amp; Soybean Processing Plants</h3>",
+            unsafe_allow_html=True,
+        )
+        ptab_corn, ptab_crush = st.tabs(["🌽  Corn Processing", "🫘  Soybean Crush"])
+
+        # ── CORN PROCESSING ─────────────────────────────────────────────────
+        with ptab_corn:
+            st.markdown(
+                f"<p style='color:{TEXT};font-size:0.85rem;margin-top:0;'>"
+                "Corn processing plants in the United States — ethanol, food/starch, "
+                "and specialty facilities. Marker size reflects ethanol capacity "
+                "(gallons/year); food/starch-only plants shown at minimum size. "
+                "Source: RFA / Corn Refiners Association plant registry.</p>",
+                unsafe_allow_html=True,
+            )
+            # ── Filters ─────────────────────────────────────────────────────
+            cf1, cf2, cf3 = st.columns(3)
+            all_statuses = sorted({p["status"] for p in _CORN_PLANTS})
+            all_classes  = sorted({p["cls"]    for p in _CORN_PLANTS})
+            all_corn_states = sorted({p["st"] for p in _CORN_PLANTS})
+
+            sel_statuses = cf1.multiselect(
+                "Status", all_statuses,
+                default=["Run"],
+                key="cp_status",
+            )
+            sel_classes = cf2.multiselect(
+                "Class", all_classes, default=all_classes, key="cp_class",
+            )
+            sel_corn_states = cf3.multiselect(
+                "State", all_corn_states, default=all_corn_states, key="cp_state",
+            )
+
+            corn_filtered = [
+                p for p in _CORN_PLANTS
+                if p["status"] in sel_statuses
+                and p["cls"]    in sel_classes
+                and p["st"]     in sel_corn_states
+            ]
+
+            # ── Color mapping ────────────────────────────────────────────────
+            STATUS_COLORS = {
+                "Run":       "#2ecc71",
+                "Expand":    "#00d4ff",
+                "Build":     "#3498db",
+                "Proposed":  "#9b59b6",
+                "Hold":      "#f39c12",
+                "Idled":     "#e67e22",
+                "Repurposed":"#95a5a6",
+                "Closed":    "#e74c3c",
+            }
+
+            import plotly.graph_objects as go_
+
+            def _corn_size(p):
+                eth = p.get("eth_gal")
+                if eth and eth > 0:
+                    return max(6, min(28, eth / 10_000_000))
+                return 5
+
+            if corn_filtered:
+                # group by status so we get one legend entry per status
+                corn_traces = []
+                for status in all_statuses:
+                    pts = [p for p in corn_filtered if p["status"] == status]
+                    if not pts:
+                        continue
+                    corn_traces.append(go_.Scattergeo(
+                        lat=[p["lat"] for p in pts],
+                        lon=[p["lon"] for p in pts],
+                        mode="markers",
+                        name=status,
+                        marker=dict(
+                            size=[_corn_size(p) for p in pts],
+                            color=STATUS_COLORS.get(status, "#888"),
+                            opacity=0.85,
+                            line=dict(width=0.5, color="#4a6a54"),
+                        ),
+                        text=[
+                            f"<b>{p['co']}</b><br>"
+                            f"{p['city']}, {p['st']}<br>"
+                            f"Status: {p['status']}  |  Class: {p['cls']}  |  Type: {p['typ']}<br>"
+                            + (f"Ethanol cap: {p['eth_gal']:,.0f} gal/yr<br>" if p.get('eth_gal') else "")
+                            + (f"Corn received: {p['corn_bu']:,.0f} bu/yr" if p.get('corn_bu') else "")
+                            for p in pts
+                        ],
+                        hoverinfo="text",
+                        showlegend=True,
+                    ))
+
+                fig_corn = go_.Figure(data=corn_traces)
+                fig_corn.update_layout(
+                    geo=dict(
+                        scope="usa",
+                        projection_type="albers usa",
+                        showland=True, landcolor="#c8dccb",
+                        showlakes=True, lakecolor="#aacdd4",
+                        showcoastlines=True, coastlinecolor="#a0b8a4",
+                        showframe=False,
+                        bgcolor="#f4f8f5",
+                    ),
+                    paper_bgcolor="#f4f8f5",
+                    plot_bgcolor="#f4f8f5",
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    height=520,
+                    legend=dict(
+                        bgcolor="rgba(232,240,235,0.92)",
+                        bordercolor="#b8d0be",
+                        borderwidth=1,
+                        font=dict(color="#1e2e22", size=11),
+                        orientation="v",
+                        x=0.01, y=0.99,
+                        xanchor="left", yanchor="top",
+                    ),
+                )
+                _chart(fig_corn, use_container_width=True)
+                st.caption(
+                    f"{len(corn_filtered)} plants shown "
+                    f"({sum(1 for p in corn_filtered if p.get('eth_gal'))} with ethanol capacity)."
+                )
+            else:
+                st.info("No plants match the selected filters.")
+
+            # ── Summary table ─────────────────────────────────────────────────
+            with st.expander("📋 Plant detail table", expanded=False):
+                import pandas as _pd
+                df_corn = _pd.DataFrame([
+                    {
+                        "Company": p["co"],
+                        "State":   p["st"],
+                        "City":    p["city"],
+                        "County":  p.get("county") or "—",
+                        "Status":  p["status"],
+                        "Class":   p["cls"],
+                        "Type":    p["typ"],
+                        "Ethanol cap (M gal/yr)": f"{p['eth_gal']/1e6:.1f}" if p.get("eth_gal") else "—",
+                        "Corn received (M bu/yr)": f"{p['corn_bu']/1e6:.2f}" if p.get("corn_bu") else "—",
+                        "Start yr": str(p["start_yr"]) if p.get("start_yr") else "—",
+                    }
+                    for p in corn_filtered
+                ])
+                st.dataframe(df_corn, use_container_width=True, hide_index=True)
+
+        # ── SOYBEAN CRUSH ────────────────────────────────────────────────────
+        with ptab_crush:
+            st.markdown(
+                f"<p style='color:{TEXT};font-size:0.85rem;margin-top:0;'>"
+                "US soybean crush facilities. Marker size reflects daily crush rate "
+                "(bu/day). NOPA region and rail access shown on hover. "
+                "Source: NOPA / company public data.</p>",
+                unsafe_allow_html=True,
+            )
+            # ── Filters ─────────────────────────────────────────────────────
+            sf1, sf2 = st.columns(2)
+            all_crush_co     = sorted({p["co"]   for p in _CRUSH_PLANTS})
+            all_crush_states = sorted({p["st"]   for p in _CRUSH_PLANTS})
+
+            sel_crush_co = sf1.multiselect(
+                "Company", all_crush_co, default=all_crush_co, key="cr_co",
+            )
+            sel_crush_states = sf2.multiselect(
+                "State", all_crush_states, default=all_crush_states, key="cr_st",
+            )
+
+            crush_filtered = [
+                p for p in _CRUSH_PLANTS
+                if p["co"] in sel_crush_co and p["st"] in sel_crush_states
+            ]
+
+            # ── Color mapping by company ─────────────────────────────────────
+            CRUSH_COLORS = {
+                "ADM":                "#e74c3c",
+                "ADM (Swing Plant)":  "#e74c3c",
+                "ADM/Marathon":       "#e74c3c",
+                "AGP":                "#3498db",
+                "Bartlett Grain":     "#f39c12",
+                "Bunge":              "#2ecc71",
+                "Cargill":            "#9b59b6",
+                "CGB":                "#1abc9c",
+                "NDSP / CGB":         "#1abc9c",
+                "CHS":                "#e67e22",
+                "Dreyfus":            "#00d4ff",
+                "Incobrasa":          "#ff6b9d",
+                "MnSP":               "#a8e6cf",
+                "Norfolk Crush":      "#ffd700",
+                "Perdue":             "#ff8c42",
+                "Platinum":           "#c0c0c0",
+                "Riceland":           "#8bc34a",
+                "Scoular (Swing Plant)": "#795548",
+                "Shell Rock/P66":     "#607d8b",
+                "SDSP":               "#ff5722",
+                "White River Soy Proc": "#4caf50",
+                "Zeeland Farms":      "#9c27b0",
+                "High Plains Part":   "#ff9800",
+            }
+
+            def _crush_size(p):
+                d = p.get("daily_bu") or 0
+                return max(7, min(32, d / 6_000))
+
+            if crush_filtered:
+                all_crush_cos_filtered = sorted({p["co"] for p in crush_filtered})
+                crush_traces = []
+                for co in all_crush_cos_filtered:
+                    pts = [p for p in crush_filtered if p["co"] == co]
+                    crush_traces.append(go_.Scattergeo(
+                        lat=[p["lat"] for p in pts],
+                        lon=[p["lon"] for p in pts],
+                        mode="markers",
+                        name=co,
+                        marker=dict(
+                            size=[_crush_size(p) for p in pts],
+                            color=CRUSH_COLORS.get(co, "#aaa"),
+                            opacity=0.88,
+                            line=dict(width=0.5, color="#4a6a54"),
+                        ),
+                        text=[
+                            f"<b>{p['co']}</b><br>"
+                            f"{p['city']}, {p['st']}<br>"
+                            f"NOPA Region: {p['nopa']}<br>"
+                            f"Daily crush: {p['daily_bu']:,} bu/day<br>"
+                            f"Rail: {p['rr']}"
+                            for p in pts
+                        ],
+                        hoverinfo="text",
+                        showlegend=True,
+                    ))
+
+                total_daily = sum(p["daily_bu"] for p in crush_filtered if p.get("daily_bu"))
+                annual_est  = total_daily * 330 / 1_000_000
+
+                fig_crush = go_.Figure(data=crush_traces)
+                fig_crush.update_layout(
+                    geo=dict(
+                        scope="usa",
+                        projection_type="albers usa",
+                        showland=True, landcolor="#c8dccb",
+                        showlakes=True, lakecolor="#aacdd4",
+                        showcoastlines=True, coastlinecolor="#a0b8a4",
+                        showframe=False,
+                        bgcolor="#f4f8f5",
+                    ),
+                    paper_bgcolor="#f4f8f5",
+                    plot_bgcolor="#f4f8f5",
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    height=520,
+                    legend=dict(
+                        bgcolor="rgba(232,240,235,0.92)",
+                        bordercolor="#b8d0be",
+                        borderwidth=1,
+                        font=dict(color="#1e2e22", size=10),
+                        orientation="v",
+                        x=0.01, y=0.99,
+                        xanchor="left", yanchor="top",
+                    ),
+                )
+                _chart(fig_crush, use_container_width=True)
+                st.caption(
+                    f"{len(crush_filtered)} crush facilities shown — "
+                    f"combined daily capacity: {total_daily:,} bu/day "
+                    f"(~{annual_est:.0f}M bu/yr at 330 operating days)."
+                )
+            else:
+                st.info("No crush facilities match the selected filters.")
+
+            # ── Summary table ─────────────────────────────────────────────────
+            with st.expander("📋 Crush facility detail table", expanded=False):
+                import pandas as _pd2
+                df_crush = _pd2.DataFrame([
+                    {
+                        "Company":       p["co"],
+                        "State":         p["st"],
+                        "City":          p["city"],
+                        "NOPA Region":   p["nopa"],
+                        "Census Region": p.get("census") or "—",
+                        "Rail":          p["rr"],
+                        "Daily (bu/day)": f"{p['daily_bu']:,}" if p.get("daily_bu") else "—",
+                    }
+                    for p in crush_filtered
+                ])
+                st.dataframe(df_crush, use_container_width=True, hide_index=True)
+
     # ABOUT THE DATA TAB
     # ══════════════════════════════════════════════════════════════════════════
     with tab_about:
@@ -5773,7 +6919,7 @@ def main():
             hovermode="x unified",
         )
 
-        st.plotly_chart(
+        _chart(
             part_fig, use_container_width=True,
             config={"displayModeBar": False},
         )
@@ -5813,6 +6959,414 @@ def main():
             ],
         })
         st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # WCMD GRAIN WAREHOUSES TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_wcmd:
+        st.markdown(
+            f"<h3 style='color:{ACCENT};margin-bottom:4px;'>USDA FSA Licensed Grain Warehouses</h3>"
+            f"<p style='color:{MUTED};font-size:0.85rem;margin-top:0;'>Licensed grain storage capacity by state and county. "
+            "Source: USDA FSA Warehouse Commodity Management Division (WCMD). Data as of current license file.</p>",
+            unsafe_allow_html=True,
+        )
+
+        @st.cache_data(ttl=86400, show_spinner=False)
+        def load_wcmd_data():
+            data_dir = Path(__file__).parent / "data"
+            state_path = data_dir / "wcmd_warehouses.csv"
+            county_path = data_dir / "wcmd_county.csv"
+            if not state_path.exists() or not county_path.exists():
+                return None, None
+
+            # State level
+            raw = pd.read_csv(state_path, encoding="utf-16", sep="\t")
+            grain = raw[raw["Commodity*"].str.strip() == "Grain"].copy()
+            state_df = grain.pivot_table(
+                index="State", columns="Unnamed: 6", values="Grain", aggfunc="first"
+            ).reset_index()
+            state_df.columns.name = None
+            if "Capacity*" in state_df.columns:
+                state_df["capacity_bu"] = (
+                    state_df["Capacity*"].astype(str)
+                    .str.replace(",", "").apply(pd.to_numeric, errors="coerce")
+                )
+            if "CCC Approved Warehouse Locations" in state_df.columns:
+                state_df["locations"] = pd.to_numeric(
+                    state_df["CCC Approved Warehouse Locations"], errors="coerce"
+                )
+            state_df = state_df[["State", "capacity_bu", "locations"]].rename(columns={"State": "state"})
+
+            # County level
+            county_df = pd.read_csv(county_path)
+            return state_df, county_df
+
+        wcmd_state, wcmd_county = load_wcmd_data()
+
+        if wcmd_state is None:
+            st.warning("WCMD data not found. Run `wcmd_scraper.py` to download.")
+        else:
+            # ── KPI row ──────────────────────────────────────────────────────
+            total_cap = wcmd_state["capacity_bu"].sum()
+            total_locs = wcmd_state["locations"].sum()
+            top_state = wcmd_state.nlargest(1, "capacity_bu").iloc[0]
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Total Licensed Grain Capacity", f"{total_cap/1e9:.2f}B bu")
+            k2.metric("Licensed Locations", f"{int(total_locs):,}")
+            k3.metric("Largest State", f"{top_state['state']} — {top_state['capacity_bu']/1e9:.2f}B bu")
+
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+            # ── State choropleth ──────────────────────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;'>Licensed Grain Storage Capacity by State (Bushels)</h4>",
+                unsafe_allow_html=True,
+            )
+            fig_wmap = px.choropleth(
+                wcmd_state,
+                locations="state",
+                locationmode="USA-states",
+                color="capacity_bu",
+                scope="usa",
+                color_continuous_scale=[[0, "#1a2535"], [0.3, "#1e4d6b"], [0.65, "#0693e3"], [1, "#60d0f0"]],
+                labels={"capacity_bu": "Capacity (bu)", "state": "State"},
+                hover_data={"state": True, "capacity_bu": ":,.0f", "locations": ":,"},
+            )
+            fig_wmap.update_layout(
+                paper_bgcolor=DARK, geo_bgcolor=DARK,
+                font=dict(color=TEXT, family="Arial"),
+                margin=dict(l=0, r=0, t=10, b=0),
+                height=420,
+                coloraxis_colorbar=dict(
+                    title="Bushels",
+                    tickformat=".2s",
+                    tickfont=dict(color=MUTED, size=10),
+                    title_font=dict(color=MUTED),
+                    len=0.6,
+                ),
+                geo=dict(
+                    lakecolor=DARK, landcolor=SURFACE,
+                    subunitcolor=BORDER, showlakes=True,
+                ),
+            )
+            _chart(fig_wmap, use_container_width=True, config={"displayModeBar": False})
+
+            # ── State bar chart ───────────────────────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>Top States by Licensed Capacity</h4>",
+                unsafe_allow_html=True,
+            )
+            top_states = wcmd_state.nlargest(20, "capacity_bu").sort_values("capacity_bu")
+            fig_wbar = go.Figure(go.Bar(
+                x=top_states["capacity_bu"] / 1e9,
+                y=top_states["state"],
+                orientation="h",
+                marker_color=ACCENT,
+                text=(top_states["capacity_bu"] / 1e9).map("{:.2f}B".format),
+                textposition="outside",
+                textfont=dict(color=TEXT, size=10),
+            ))
+            fig_wbar.update_layout(
+                paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                font=dict(color=TEXT, family="Arial"),
+                margin=dict(l=20, r=60, t=10, b=40),
+                height=480,
+                xaxis=dict(
+                    title="Capacity (billion bu)",
+                    gridcolor=BORDER, tickfont=dict(color=MUTED),
+                    title_font=dict(color=MUTED),
+                    tickformat=".1f",
+                ),
+                yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
+            )
+            _chart(fig_wbar, use_container_width=True, config={"displayModeBar": False})
+
+            # ── County drilldown ──────────────────────────────────────────────
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;'>County / ASD Drilldown</h4>",
+                unsafe_allow_html=True,
+            )
+            states_available = sorted(wcmd_county["state"].unique().tolist())
+            sel_wcmd_state = st.selectbox("Select State", states_available, key="wcmd_state_sel")
+            county_filtered = wcmd_county[wcmd_county["state"] == sel_wcmd_state].copy()
+            county_filtered = county_filtered.sort_values("est_capacity_bu", ascending=False)
+
+            fig_cbar = go.Figure(go.Bar(
+                x=county_filtered["est_capacity_bu"] / 1e6,
+                y=county_filtered["county"],
+                orientation="h",
+                marker_color=ACCENT,
+                text=(county_filtered["est_capacity_bu"] / 1e6).map("{:.1f}M".format),
+                textposition="outside",
+                textfont=dict(color=TEXT, size=9),
+            ))
+            fig_cbar.update_layout(
+                paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                font=dict(color=TEXT, family="Arial"),
+                margin=dict(l=20, r=60, t=10, b=40),
+                height=max(300, len(county_filtered) * 22),
+                xaxis=dict(
+                    title="Est. Capacity (million bu)",
+                    gridcolor=BORDER, tickfont=dict(color=MUTED),
+                    title_font=dict(color=MUTED),
+                ),
+                yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER, autorange="reversed"),
+            )
+            _chart(fig_cbar, use_container_width=True, config={"displayModeBar": False})
+
+            # ── State table ───────────────────────────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>Full State Summary</h4>",
+                unsafe_allow_html=True,
+            )
+            tbl_state = wcmd_state.copy().sort_values("capacity_bu", ascending=False)
+            tbl_state["capacity_bu"] = tbl_state["capacity_bu"].map("{:,.0f}".format)
+            tbl_state["locations"] = tbl_state["locations"].map("{:.0f}".format)
+            tbl_state.columns = ["State", "Capacity (bu)", "Licensed Locations"]
+            st.dataframe(tbl_state, use_container_width=True, hide_index=True)
+            st.markdown(
+                f"<p style='color:{MUTED};font-size:0.78rem;margin-top:4px;'>County capacity is estimated by distributing state totals "
+                "proportionally to functional storage units per county. Source: USDA FSA WCMD.</p>",
+                unsafe_allow_html=True,
+            )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STORAGE VS. PRODUCTION TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_storage_cmp:
+        st.markdown(
+            f"<h3 style='color:{ACCENT};margin-bottom:4px;'>Storage Capacity vs. Production & Sep 1 Stocks</h3>"
+            f"<p style='color:{MUTED};font-size:0.85rem;margin-top:0;'>Compares USDA FSA licensed grain storage to NASS production "
+            "(corn, soybeans, wheat, oats, sorghum) and September 1 grain stocks by state.</p>",
+            unsafe_allow_html=True,
+        )
+
+        @st.cache_data(ttl=3600, show_spinner=False)
+        def load_storage_cmp_data():
+            data_dir = Path(__file__).parent / "data"
+            stocks_path = data_dir / "nass_sep1_stocks_state.csv"
+            prod_path = data_dir / "nass_production_state.csv"
+            wcmd_path = data_dir / "wcmd_warehouses.csv"
+            for p in [stocks_path, prod_path, wcmd_path]:
+                if not p.exists():
+                    return None, None, None
+
+            GRAINS = ["CORN", "SOYBEANS", "WHEAT", "OATS", "SORGHUM"]
+
+            stocks = pd.read_csv(stocks_path, dtype=str)
+            stocks = stocks[stocks["commodity_desc"].isin(GRAINS)].copy()
+            stocks["value_bu"] = pd.to_numeric(stocks["Value"].str.replace(",", ""), errors="coerce")
+            stocks = stocks[["year", "state_alpha", "commodity_desc", "value_bu"]].dropna()
+
+            prod = pd.read_csv(prod_path, dtype=str)
+            prod = prod[(prod["commodity_desc"].isin(GRAINS)) & (prod["reference_period_desc"] == "YEAR")].copy()
+            prod["value_bu"] = pd.to_numeric(prod["Value"].str.replace(",", ""), errors="coerce")
+            prod = prod[["year", "state_alpha", "commodity_desc", "value_bu"]].dropna()
+
+            raw = pd.read_csv(wcmd_path, encoding="utf-16", sep="\t")
+            grain_cap = raw[(raw["Commodity*"].str.strip() == "Grain") &
+                            (raw["Unnamed: 6"].str.strip() == "Capacity*")].copy()
+            grain_cap["capacity_bu"] = (
+                grain_cap["Grain"].astype(str).str.replace(",", "")
+                .apply(pd.to_numeric, errors="coerce")
+            )
+            cap_df = grain_cap[["State", "capacity_bu"]].rename(columns={"State": "state"})
+
+            return stocks, prod, cap_df
+
+        stocks_df, prod_df, cap_df = load_storage_cmp_data()
+
+        if stocks_df is None:
+            st.warning("Data files missing. Run NASS data fetcher and WCMD scraper first.")
+        else:
+            sc_c1, sc_c2 = st.columns([2, 1])
+            with sc_c1:
+                avail_years = sorted(prod_df["year"].unique(), reverse=True)
+                sel_year = st.selectbox("Year", avail_years, key="sc_year")
+            with sc_c2:
+                view_mode = st.radio("View", ["State", "County (est.)"], horizontal=True, key="sc_view")
+
+            # ── Build comparison table ────────────────────────────────────────
+            yr = str(sel_year)
+            prod_yr = prod_df[prod_df["year"] == yr].groupby("state_alpha")["value_bu"].sum().reset_index()
+            prod_yr.columns = ["state", "production_bu"]
+
+            stocks_yr_df = stocks_df[stocks_df["year"] == yr]
+            if stocks_yr_df.empty and int(yr) > int(stocks_df["year"].max()):
+                stocks_yr_df = stocks_df[stocks_df["year"] == stocks_df["year"].max()]
+                st.info(f"Sep 1 stocks not yet published for {yr}; showing {stocks_df['year'].max()} stocks.")
+            stocks_yr = stocks_yr_df.groupby("state_alpha")["value_bu"].sum().reset_index()
+            stocks_yr.columns = ["state", "sep1_stocks_bu"]
+
+            cmp = cap_df.merge(prod_yr, on="state", how="left")
+            cmp = cmp.merge(stocks_yr, on="state", how="left")
+            cmp = cmp.dropna(subset=["capacity_bu", "production_bu"])
+            cmp["cap_vs_prod_pct"] = cmp["capacity_bu"] / cmp["production_bu"] * 100
+            cmp["cap_vs_stocks_pct"] = cmp["capacity_bu"] / cmp["sep1_stocks_bu"] * 100
+
+            # ── KPIs ──────────────────────────────────────────────────────────
+            nat_cap = cmp["capacity_bu"].sum()
+            nat_prod = cmp["production_bu"].sum()
+            nat_stocks = cmp["sep1_stocks_bu"].sum()
+            ck1, ck2, ck3, ck4 = st.columns(4)
+            ck1.metric("Licensed Grain Capacity", f"{nat_cap/1e9:.1f}B bu")
+            ck2.metric(f"Total Production ({yr})", f"{nat_prod/1e9:.1f}B bu")
+            ck3.metric("Sep 1 Stocks", f"{nat_stocks/1e9:.1f}B bu" if nat_stocks > 0 else "N/A")
+            ck4.metric("Capacity / Production", f"{nat_cap/nat_prod*100:.0f}%" if nat_prod else "N/A")
+
+            st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+            # ── Commodity breakdown (national) ────────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;'>Production by Commodity ({yr}) vs. Total Capacity</h4>",
+                unsafe_allow_html=True,
+            )
+            prod_comm = prod_df[prod_df["year"] == yr].groupby("commodity_desc")["value_bu"].sum().reset_index()
+            prod_comm = prod_comm.sort_values("value_bu", ascending=True)
+            COMM_COLORS = {
+                "CORN": "#f59e0b", "SOYBEANS": "#34d399", "WHEAT": "#c084fc",
+                "OATS": "#60a5fa", "SORGHUM": "#f87171",
+            }
+            fig_comm = go.Figure()
+            for _, row in prod_comm.iterrows():
+                fig_comm.add_trace(go.Bar(
+                    x=[row["value_bu"] / 1e9], y=[row["commodity_desc"]],
+                    orientation="h", name=row["commodity_desc"],
+                    marker_color=COMM_COLORS.get(row["commodity_desc"], ACCENT),
+                    text=f'{row["value_bu"]/1e9:.2f}B bu',
+                    textposition="outside",
+                    textfont=dict(color=TEXT, size=10),
+                ))
+            fig_comm.add_vline(
+                x=nat_cap / 1e9,
+                line_dash="dash", line_color="#e74c3c", line_width=2,
+                annotation_text=f"Capacity: {nat_cap/1e9:.1f}B bu",
+                annotation_font_color="#e74c3c",
+                annotation_position="top right",
+            )
+            fig_comm.update_layout(
+                paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                font=dict(color=TEXT, family="Arial"),
+                margin=dict(l=20, r=80, t=20, b=40),
+                height=320,
+                showlegend=False,
+                barmode="stack",
+                xaxis=dict(
+                    title="Billion Bushels",
+                    gridcolor=BORDER, tickfont=dict(color=MUTED),
+                    title_font=dict(color=MUTED),
+                ),
+                yaxis=dict(tickfont=dict(color=TEXT)),
+            )
+            _chart(fig_comm, use_container_width=True, config={"displayModeBar": False})
+
+            # ── State-level scatter ────────────────────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>State: Capacity vs. Production + Sep 1 Stocks</h4>",
+                unsafe_allow_html=True,
+            )
+            fig_scatter = go.Figure()
+            fig_scatter.add_trace(go.Scatter(
+                x=cmp["production_bu"] / 1e6,
+                y=cmp["capacity_bu"] / 1e6,
+                mode="markers+text",
+                text=cmp["state"],
+                textposition="top center",
+                textfont=dict(color=TEXT, size=9),
+                marker=dict(
+                    size=cmp["capacity_bu"].fillna(0) / cmp["capacity_bu"].max() * 30 + 6,
+                    color=ACCENT, opacity=0.8, line=dict(color=BORDER, width=1),
+                ),
+                name="Production",
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "Production: %{x:,.0f}M bu<br>"
+                    "Capacity: %{y:,.0f}M bu<extra></extra>"
+                ),
+            ))
+            # 45-degree parity line
+            max_val = max(cmp["production_bu"].max(), cmp["capacity_bu"].max()) / 1e6
+            fig_scatter.add_trace(go.Scatter(
+                x=[0, max_val], y=[0, max_val],
+                mode="lines", line=dict(color="#e74c3c", dash="dash", width=1),
+                name="Capacity = Production", showlegend=True,
+            ))
+            fig_scatter.update_layout(
+                paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                font=dict(color=TEXT, family="Arial"),
+                margin=dict(l=60, r=20, t=10, b=50),
+                height=480,
+                xaxis=dict(
+                    title=f"Total Grain Production {yr} (M bu)",
+                    gridcolor=BORDER, tickfont=dict(color=MUTED),
+                    title_font=dict(color=MUTED),
+                    tickformat=",",
+                ),
+                yaxis=dict(
+                    title="Licensed Grain Capacity (M bu)",
+                    gridcolor=BORDER, tickfont=dict(color=MUTED),
+                    title_font=dict(color=MUTED),
+                    tickformat=",",
+                ),
+                legend=dict(
+                    font=dict(color=TEXT), bgcolor="rgba(0,0,0,0)",
+                    orientation="h", yanchor="bottom", y=1.02, x=0,
+                ),
+                hovermode="closest",
+            )
+            _chart(fig_scatter, use_container_width=True, config={"displayModeBar": False})
+
+            # ── State comparison table ────────────────────────────────────────
+            st.markdown(
+                f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>State Comparison Table</h4>",
+                unsafe_allow_html=True,
+            )
+            tbl = cmp.copy().sort_values("capacity_bu", ascending=False)
+            tbl_disp = pd.DataFrame({
+                "State": tbl["state"],
+                "Capacity (bu)": tbl["capacity_bu"].map("{:,.0f}".format),
+                f"Production {yr} (bu)": tbl["production_bu"].map("{:,.0f}".format),
+                "Sep 1 Stocks (bu)": tbl["sep1_stocks_bu"].map(
+                    lambda v: f"{v:,.0f}" if pd.notna(v) and v > 0 else "—"
+                ),
+                "Cap / Prod": tbl["cap_vs_prod_pct"].map(
+                    lambda v: f"{v:.0f}%" if pd.notna(v) else "—"
+                ),
+                "Cap / Stocks": tbl["cap_vs_stocks_pct"].map(
+                    lambda v: f"{v:.0f}%" if pd.notna(v) and v < 1e6 else "—"
+                ),
+            })
+            st.dataframe(tbl_disp, use_container_width=True, hide_index=True)
+            st.markdown(
+                f"<p style='color:{MUTED};font-size:0.78rem;margin-top:4px;'>"
+                "Production = sum of corn, soybeans, wheat, oats, sorghum (NASS final annual). "
+                "Sep 1 Stocks from USDA NASS Grain Stocks report. "
+                "Capacity from USDA FSA WCMD licensed grain warehouse file.</p>",
+                unsafe_allow_html=True,
+            )
+
+    # ── Disclaimer footer ────────────────────────────────────────────────────
+    st.markdown("<hr style='border-color:#3a3f47;margin-top:40px;margin-bottom:12px;'>", unsafe_allow_html=True)
+    st.markdown(
+        f"""<p style='color:#6b7280;font-size:0.72rem;line-height:1.55;text-align:center;
+            max-width:960px;margin:0 auto 24px auto;'>
+        Trading commodity futures, options on futures, cash commodities, and over-the-counter
+        derivative products involves substantial risk of loss and may not be suitable for all
+        investors. This communication is provided for informational purposes only and does not
+        constitute investment advice, a recommendation, or an offer or solicitation to buy or
+        sell any futures, options, cash commodities, or derivative products. John Stewart &amp;
+        Associates, Inc. does not accept orders to buy or sell any financial instruments via
+        email. The information contained herein has been obtained from sources believed to be
+        reliable; however, its accuracy and completeness are not guaranteed. Any opinions
+        expressed are solely those of the author, are subject to change without notice, and
+        should not be relied upon as a basis for investment decisions. Past performance is not
+        indicative of future results. This message may contain confidential or proprietary
+        information intended solely for the use of the designated recipient.
+        &copy; John Stewart &amp; Associates, Inc. {datetime.datetime.now().year}
+        </p>""",
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":
