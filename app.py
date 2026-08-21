@@ -7782,14 +7782,20 @@ def main():
                 oat_s   = hpg[(hpg["commodity_desc"] == "OATS")     & hpg["state_alpha"].isin(hist_states)]["value_bu"].sum()
                 total_s = corn_s + soy_s + wht_s + oat_s
 
-                # Storage: NASS off-farm for historical, WCMD for latest
-                nass_sto = 0
-                if nass_cap_df is not None:
+                # Storage: respect selected storage_layer
+                hist_sto = 0
+                if storage_layer == "WCMD Licensed":
+                    hist_sto = df_full_cur[df_full_cur["state"].isin(hist_states)]["wcmd_licensed_bu"].sum()
+                elif nass_cap_df is not None:
                     avail_nc = sorted(nass_cap_df["year"].unique())
                     nc_yr_h = hy if hy in avail_nc else max((y for y in avail_nc if y <= hy), default=avail_nc[-1])
-                    nc_h = nass_cap_df[(nass_cap_df["year"] == nc_yr_h) & nass_cap_df["short_desc"].str.contains("OFF FARM", na=False)]
-                    nass_sto = nc_h[nc_h["state_alpha"].isin(hist_states)]["value_bu"].sum()
-                wcmd_sto = df_full_cur[df_full_cur["state"].isin(hist_states)]["wcmd_licensed_bu"].sum()
+                    nc_h_st = nass_cap_df[(nass_cap_df["year"] == nc_yr_h) & nass_cap_df["state_alpha"].isin(hist_states)]
+                    if storage_layer == "NASS On-Farm":
+                        hist_sto = nc_h_st[nc_h_st["short_desc"].str.contains("ON FARM", na=False)]["value_bu"].sum()
+                    elif storage_layer == "NASS Off-Farm":
+                        hist_sto = nc_h_st[nc_h_st["short_desc"].str.contains("OFF FARM", na=False)]["value_bu"].sum()
+                    else:  # NASS Total (On+Off)
+                        hist_sto = nc_h_st["value_bu"].sum()
 
                 hist_rows.append({
                     "year": int(hy),
@@ -7798,9 +7804,8 @@ def main():
                     "wheat":     wht_s  / 1e6,
                     "oats":      oat_s  / 1e6,
                     "total_supply": total_s / 1e6,
-                    "nass_offfarm": nass_sto / 1e6,
-                    "wcmd": wcmd_sto / 1e6,
-                    "ratio": nass_sto / total_s if total_s > 0 else None,
+                    "storage": hist_sto / 1e6,
+                    "ratio": hist_sto / total_s if total_s > 0 else None,
                 })
 
             hist_df = pd.DataFrame(hist_rows).sort_values("year", ascending=False)
@@ -7821,13 +7826,13 @@ def main():
                 ))
 
             fig_hist.add_trace(go.Scatter(
-                name="NASS Off-Farm Storage",
+                name=storage_layer,
                 x=hist_df["year"].astype(str),
-                y=hist_df["nass_offfarm"],
+                y=hist_df["storage"],
                 mode="lines+markers",
-                line=dict(color="#e0e0e0", width=2.5),
-                marker=dict(color="#e0e0e0", size=6),
-                hovertemplate="NASS Off-Farm: %{y:,.0f}M bu<extra></extra>",
+                line=dict(color=_svc_line_color, width=2.5),
+                marker=dict(color=_svc_line_color, size=6),
+                hovertemplate=f"{storage_layer}: %{{y:,.0f}}M bu<extra></extra>",
             ))
 
             # Ratio annotations
