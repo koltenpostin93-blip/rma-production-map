@@ -1579,7 +1579,7 @@ def build_nass_district_fig(dist_view_df: pd.DataFrame,
         geo=dict(showlakes=False),
     )
     fig.update_layout(**_layout)
-    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    _add_logo(fig, logo_50yr)
     return fig
 
 
@@ -2553,11 +2553,11 @@ def load_logo(path):
         return "data:image/png;base64," + base64.b64encode(f.read()).decode()
 
 
-def _add_logo(fig, logo_src, size=0.13, opacity=0.92, x=0.99, y=0.01,
-              yanchor="bottom", layer="above"):
+def _add_logo(fig, logo_src, size=0.25, opacity=0.12, x=0.5, y=0.5,
+              yanchor="middle", layer="above"):
     fig.add_layout_image(
         source=logo_src, xref="paper", yref="paper",
-        x=x, y=y, xanchor="right", yanchor=yanchor,
+        x=x, y=y, xanchor="center", yanchor=yanchor,
         sizex=size, sizey=size, sizing="contain",
         opacity=opacity, layer=layer,
     )
@@ -2651,7 +2651,7 @@ def build_state_fig(agg, metric, crop_label, practice, logo_50yr):
             textfont=dict(color="#374151", size=11, family="Arial Black"),
             showlegend=False, hoverinfo="skip",
         ))
-    _add_logo(fig, logo_50yr, size=0.30, opacity=1.0)
+    _add_logo(fig, logo_50yr)
     return fig
 
 
@@ -2708,7 +2708,7 @@ def build_county_fig(agg, geo, fips_lk, centroids, state, metric, crop_label, pr
                     bgcolor=DARK, landcolor=LAND)
     fig.update_layout(**_base_layout(title_text),
                       height=_state_map_height(sfips, geo))
-    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    _add_logo(fig, logo_50yr)
     _place_labels(fig, df["fips"].tolist(), df[col].tolist(), centroids, metric)
     return fig
 
@@ -2801,7 +2801,7 @@ def build_nass_state_fig(state_vdf, crop, year, metric, change_view, logo_50yr):
             textfont=dict(color="#374151", size=11, family="Arial Black"),
             showlegend=False, hoverinfo="skip",
         ))
-    _add_logo(fig, logo_50yr, size=0.30, opacity=1.0)
+    _add_logo(fig, logo_50yr)
     return fig
 
 
@@ -2909,7 +2909,7 @@ def build_nass_county_fig(county_vdf, geo, state, crop, year, metric, change_vie
     fig.update_geos(fitbounds="locations", visible=False, bgcolor=DARK, landcolor=LAND)
     fig.update_layout(**_base_layout(title_text),
                       height=_state_map_height(sfips, geo))
-    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    _add_logo(fig, logo_50yr)
     _place_labels(fig, state_df["fips"].tolist(), state_df["Value"].tolist(),
                   centroids, cfg["label_fn"])
     return fig
@@ -2999,7 +2999,7 @@ def build_nass_county_fig_with_est(completed_df: pd.DataFrame, geo, state: str,
     fig.update_geos(fitbounds="locations", visible=False, bgcolor=DARK, landcolor=LAND)
     fig.update_layout(**_base_layout(title_text),
                       height=_state_map_height(sfips, geo))
-    _add_logo(fig, logo_50yr, size=0.15, opacity=1.0, x=0.99, y=0.03, yanchor="bottom")
+    _add_logo(fig, logo_50yr)
 
     # Production labels for reported counties only (same as existing county fig)
     rep_fips = [f for f in all_fips if f in fips_val and not fips_est.get(f, False)]
@@ -3539,22 +3539,8 @@ def _lv_auto_scale(mx: float, base_unit: str) -> tuple:
 _st_plotly_chart = st.plotly_chart  # saved before _chart shadows the call site
 
 
-def _add_wm(fig: "go.Figure") -> "go.Figure":
-    """Add a subtle JSA watermark annotation to a Plotly figure."""
-    fig.add_annotation(
-        text="JSA",
-        xref="paper", yref="paper",
-        x=0.5, y=0.5,
-        showarrow=False,
-        font=dict(size=80, color="rgba(66,82,72,0.05)", family="Arial Black, Arial"),
-        textangle=-30,
-    )
-    return fig
-
-
 def _chart(fig, **kw) -> None:
-    """Wrapper around st.plotly_chart that applies the JSA watermark."""
-    _st_plotly_chart(_add_wm(fig), **kw)
+    _st_plotly_chart(fig, **kw)
 
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -5209,7 +5195,7 @@ def main():
                     textfont=dict(color="#374151", size=10, family="Arial Black"),
                     showlegend=False, hoverinfo="skip", geo="geo",
                 ))
-            _add_logo(stk_fig, logo_50yr, size=0.30, opacity=1.0)
+            _add_logo(stk_fig, logo_50yr)
             _chart(stk_fig, use_container_width=True, key="stk_map",
                             config={"scrollZoom": False, "displayModeBar": False,
                                     "doubleClick": False})
@@ -5287,7 +5273,7 @@ def main():
                     title=f"US {stk_crop} {stk_view} — {stk_period_lbl}",
                     y_label=_sl,
                 )
-            _add_logo(_chart_fig, logo_50yr, size=0.18, opacity=1.0)
+            _add_logo(_chart_fig, logo_50yr)
             _chart(_chart_fig, use_container_width=True, key="stk_chart",
                             config={"displayModeBar": False})
 
@@ -5428,7 +5414,7 @@ def main():
                                tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
                     hovermode="x unified",
                 )
-                _add_logo(fig_disapp, logo_50yr, size=0.15, opacity=1.0)
+                _add_logo(fig_disapp, logo_50yr)
                 _chart(fig_disapp, use_container_width=True, key="stk_disapp_chart",
                        config={"displayModeBar": False})
 
@@ -7156,7 +7142,7 @@ def main():
                     subunitcolor=BORDER, showlakes=True,
                 ),
             )
-            _add_logo(fig_wmap, logo_50yr, size=0.15, opacity=1.0)
+            _add_logo(fig_wmap, logo_50yr)
             _chart(fig_wmap, use_container_width=True, config={"displayModeBar": False})
 
             # ── State bar chart ───────────────────────────────────────────────
@@ -7187,7 +7173,7 @@ def main():
                 ),
                 yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
             )
-            _add_logo(fig_wbar, logo_50yr, size=0.18, opacity=1.0)
+            _add_logo(fig_wbar, logo_50yr)
             _chart(fig_wbar, use_container_width=True, config={"displayModeBar": False})
 
             # ── County / ASD drilldown ────────────────────────────────────────
@@ -7297,7 +7283,7 @@ def main():
                     ),
                     yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER, autorange="reversed"),
                 )
-            _add_logo(fig_cbar, logo_50yr, size=0.15, opacity=1.0)
+            _add_logo(fig_cbar, logo_50yr)
             _chart(fig_cbar, use_container_width=True, config={"displayModeBar": False})
 
             # ── State table ───────────────────────────────────────────────────
@@ -7375,7 +7361,7 @@ def main():
                     yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
                     hovermode="y unified",
                 )
-                _add_logo(fig_nsc, logo_50yr, size=0.15, opacity=1.0)
+                _add_logo(fig_nsc, logo_50yr)
                 _chart(fig_nsc, use_container_width=True, config={"displayModeBar": False})
 
                 # Trend: national on-farm vs off-farm
@@ -7714,7 +7700,7 @@ def main():
                 annotations=annotations_svc + yoy_anns,
                 hovermode="x unified",
             )
-            _add_logo(fig_svc, logo_50yr, size=0.18, opacity=1.0)
+            _add_logo(fig_svc, logo_50yr)
             _chart(fig_svc, use_container_width=True, config={"displayModeBar": False})
 
             # YoY label below chart
@@ -7874,7 +7860,7 @@ def main():
                 annotations=hist_anns,
                 hovermode="x unified",
             )
-            _add_logo(fig_hist, logo_50yr, size=0.18, opacity=1.0)
+            _add_logo(fig_hist, logo_50yr)
             _chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
 
             # ── State detail table ─────────────────────────────────────────────
@@ -8176,7 +8162,7 @@ def main():
                                    tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
                         hovermode="x unified",
                     )
-                    _add_logo(fig_eth, logo_50yr, size=0.15, opacity=1.0)
+                    _add_logo(fig_eth, logo_50yr)
                     _chart(fig_eth, use_container_width=True, config={"displayModeBar": False})
 
                     # ── PADD snapshot bar (latest 12-month average) ───────────
@@ -8214,7 +8200,7 @@ def main():
                                    tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
                         yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
                     )
-                    _add_logo(fig_padd, logo_50yr, size=0.15, opacity=1.0)
+                    _add_logo(fig_padd, logo_50yr)
                     _chart(fig_padd, use_container_width=True, config={"displayModeBar": False})
 
                 # ── Feedstock Consumption ─────────────────────────────────────
@@ -8303,7 +8289,7 @@ def main():
                                     showgrid=False),
                         hovermode="x unified",
                     )
-                    _add_logo(fig_feed, logo_50yr, size=0.15, opacity=1.0)
+                    _add_logo(fig_feed, logo_50yr)
                     _chart(fig_feed, use_container_width=True, config={"displayModeBar": False})
 
                     # ── Annual feedstock table ────────────────────────────────
