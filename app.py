@@ -2174,7 +2174,7 @@ def load_aquaculture_nass(species_key: str, year: int,
                           agg_level: str = "STATE",
                           state_alpha: str = "",
                           cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
-    """Fetch NASS Census of Aquaculture sales data by state."""
+    """Fetch NASS Census of Aquaculture sales data by state (dollars — weight not available via API)."""
     params: dict = {
         "key":               NASS_API_KEY,
         "source_desc":       "CENSUS",
@@ -7131,6 +7131,109 @@ def main():
                 unsafe_allow_html=True,
             )
 
+            # ── NASS On-Farm vs Off-Farm Storage by State ─────────────────────
+            @st.cache_data(ttl=86400, show_spinner=False)
+            def load_nass_storage_capacity():
+                p = Path(__file__).parent / "data" / "nass_grain_storage_capacity_state.csv"
+                if not p.exists():
+                    return None
+                nc = pd.read_csv(p, dtype=str)
+                nc["value_bu"] = pd.to_numeric(nc["Value"].str.replace(",", ""), errors="coerce")
+                return nc[nc["value_bu"].notna()].copy()
+
+            nass_sc = load_nass_storage_capacity()
+            if nass_sc is not None:
+                st.markdown("<hr style='border-color:#3a3f47;margin:28px 0 16px 0;'>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<h4 style='color:{ACCENT};margin-bottom:4px;'>NASS Grain Storage Capacity — On-Farm & Off-Farm by State</h4>"
+                    f"<p style='color:{MUTED};font-size:0.82rem;margin-top:0;'>Annual survey covering farmer-owned bins/bags (on-farm) and "
+                    "commercial elevators & warehouses (off-farm). Source: USDA NASS.</p>",
+                    unsafe_allow_html=True,
+                )
+                avail_nc_years = sorted(nass_sc["year"].unique(), reverse=True)
+                sel_nc_yr = str(st.selectbox("Year", avail_nc_years, key="wcmd_nass_yr"))
+                nc_yr = nass_sc[nass_sc["year"].astype(str) == sel_nc_yr]
+
+                OFF_DESC = "GRAIN STORAGE CAPACITY, OFF FARM - CAPACITY, MEASURED IN BU"
+                ON_DESC  = "GRAIN STORAGE CAPACITY, ON FARM - CAPACITY, MEASURED IN BU"
+                nc_off = nc_yr[nc_yr["short_desc"] == OFF_DESC][["state_alpha","value_bu"]].rename(columns={"value_bu":"off_farm"})
+                nc_on  = nc_yr[nc_yr["short_desc"] == ON_DESC ][["state_alpha","value_bu"]].rename(columns={"value_bu":"on_farm"})
+                nc_state = nc_off.merge(nc_on, on="state_alpha", how="outer").dropna()
+                nc_state["total"] = nc_state["off_farm"] + nc_state["on_farm"]
+                nc_state = nc_state.sort_values("total", ascending=True)
+
+                fig_nsc = go.Figure()
+                fig_nsc.add_trace(go.Bar(
+                    name="Off-Farm (Commercial)", x=nc_state["off_farm"] / 1e9, y=nc_state["state_alpha"],
+                    orientation="h", marker_color="#f97316",
+                    hovertemplate="Off-Farm: %{x:.2f}B bu<extra></extra>",
+                ))
+                fig_nsc.add_trace(go.Bar(
+                    name="On-Farm / Temporary", x=nc_state["on_farm"] / 1e9, y=nc_state["state_alpha"],
+                    orientation="h", marker_color="#a3e635",
+                    hovertemplate="On-Farm: %{x:.2f}B bu<extra></extra>",
+                ))
+                fig_nsc.update_layout(
+                    paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                    font=dict(color=TEXT, family="Arial"),
+                    margin=dict(l=20, r=20, t=10, b=50),
+                    height=max(400, len(nc_state) * 22),
+                    barmode="stack",
+                    legend=dict(
+                        font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
+                        orientation="h", yanchor="bottom", y=1.02, x=0,
+                    ),
+                    xaxis=dict(
+                        title="Billion Bushels", gridcolor=BORDER,
+                        tickfont=dict(color=MUTED), title_font=dict(color=MUTED),
+                    ),
+                    yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
+                    hovermode="y unified",
+                )
+                _chart(fig_nsc, use_container_width=True, config={"displayModeBar": False})
+
+                # Trend: national on-farm vs off-farm
+                st.markdown(
+                    f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>National Trend: On-Farm vs Off-Farm Capacity</h4>",
+                    unsafe_allow_html=True,
+                )
+                nat_sc = nass_sc.groupby(["year","short_desc"])["value_bu"].sum().reset_index()
+                TREND_MAP = {
+                    OFF_DESC: ("Off-Farm (Commercial)", "#f97316"),
+                    ON_DESC:  ("On-Farm / Temporary",   "#a3e635"),
+                }
+                fig_sc_trend = go.Figure()
+                for desc, (label, color) in TREND_MAP.items():
+                    sub = nat_sc[nat_sc["short_desc"] == desc].sort_values("year")
+                    fig_sc_trend.add_trace(go.Scatter(
+                        x=sub["year"].astype(int), y=sub["value_bu"] / 1e9,
+                        mode="lines+markers", name=label,
+                        line=dict(color=color, width=2),
+                        marker=dict(color=color, size=5),
+                        hovertemplate=f"{label}: %{{y:.2f}}B bu<extra></extra>",
+                    ))
+                fig_sc_trend.update_layout(
+                    paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                    font=dict(color=TEXT, family="Arial"),
+                    margin=dict(l=60, r=20, t=10, b=50),
+                    height=300,
+                    legend=dict(font=dict(color=TEXT), bgcolor="rgba(0,0,0,0)",
+                                orientation="h", yanchor="bottom", y=1.02, x=0),
+                    xaxis=dict(title="Year", gridcolor=BORDER, tickfont=dict(color=MUTED),
+                               title_font=dict(color=MUTED), dtick=2),
+                    yaxis=dict(title="Billion Bushels", gridcolor=BORDER,
+                               tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
+                    hovermode="x unified",
+                )
+                _chart(fig_sc_trend, use_container_width=True, config={"displayModeBar": False})
+                st.markdown(
+                    f"<p style='color:{MUTED};font-size:0.78rem;margin-top:4px;'>"
+                    "On-farm includes farmer-owned bins, grain bags, and temporary structures. "
+                    "Off-farm includes commercial grain elevators and licensed warehouses. "
+                    "USDA NASS Grain Storage Capacity report, published annually each January.</p>",
+                    unsafe_allow_html=True,
+                )
+
     # ══════════════════════════════════════════════════════════════════════════
     # STORAGE VS. PRODUCTION TAB
     # ══════════════════════════════════════════════════════════════════════════
@@ -7146,13 +7249,14 @@ def main():
         @st.cache_data(ttl=3600, show_spinner=False)
         def load_storage_cmp_data():
             data_dir = Path(__file__).parent / "data"
-            stocks_path  = data_dir / "nass_sep1_stocks_state.csv"
-            prod_path    = data_dir / "nass_production_state.csv"
-            wcmd_path    = data_dir / "wcmd_warehouses.csv"
-            nass_cap_path = data_dir / "nass_grain_storage_capacity_state.csv"
+            stocks_path    = data_dir / "nass_sep1_stocks_state.csv"
+            prod_path      = data_dir / "nass_production_state.csv"
+            wcmd_path      = data_dir / "wcmd_warehouses.csv"
+            nass_cap_path  = data_dir / "nass_grain_storage_capacity_state.csv"
+            silage_path    = data_dir / "nass_corn_silage_state.csv"
             for p in [stocks_path, prod_path, wcmd_path]:
                 if not p.exists():
-                    return None, None, None, None
+                    return None, None, None, None, None
 
             GRAINS = ["CORN", "SOYBEANS", "WHEAT", "OATS", "SORGHUM"]
 
@@ -7184,12 +7288,21 @@ def main():
                 nass_cap = nc[["year", "state_alpha", "short_desc", "value_bu"]].copy()
                 nass_cap = nass_cap[nass_cap["value_bu"].notna()]
 
-            return stocks, prod, cap_df, nass_cap
+            # Corn silage (tons)
+            silage = None
+            if silage_path.exists():
+                sl = pd.read_csv(silage_path, dtype=str)
+                sl["value_tons"] = pd.to_numeric(sl["Value"].str.replace(",", ""), errors="coerce")
+                silage = sl[sl["value_tons"] > 0][["year", "state_alpha", "value_tons"]].dropna()
+                silage["year"] = silage["year"].astype(str)
 
-        stocks_df, prod_df, cap_df, nass_cap_df = load_storage_cmp_data()
+            return stocks, prod, cap_df, nass_cap, silage
+
+        stocks_df, prod_df, cap_df, nass_cap_df, silage_df = load_storage_cmp_data()
 
         if stocks_df is None:
             st.warning("Data files missing. Run NASS data fetcher and WCMD scraper first.")
+            silage_df = None
         else:
             sel_year = st.selectbox("Year", sorted(prod_df["year"].unique(), reverse=True), key="sc_year")
             yr = str(sel_year)
@@ -7225,6 +7338,14 @@ def main():
             cmp = cmp.merge(stocks_yr, on="state", how="left")
             cmp = cmp.merge(nass_off_state, on="state", how="left")
             cmp = cmp.merge(nass_on_state,  on="state", how="left")
+            # Corn silage (tons — separate unit, shown alongside grain production)
+            silage_yr_df = pd.DataFrame(columns=["state", "silage_tons"])
+            if silage_df is not None:
+                sl_yr = silage_df[silage_df["year"] == yr]
+                if sl_yr.empty and int(yr) > int(silage_df["year"].max()):
+                    sl_yr = silage_df[silage_df["year"] == silage_df["year"].max()]
+                silage_yr_df = sl_yr.rename(columns={"state_alpha": "state", "value_tons": "silage_tons"})[["state","silage_tons"]]
+            cmp = cmp.merge(silage_yr_df, on="state", how="left")
             cmp = cmp.dropna(subset=["wcmd_licensed_bu", "production_bu"])
 
             # ── National totals ────────────────────────────────────────────────
@@ -7257,13 +7378,12 @@ def main():
             prod_comm = prod_df[prod_df["year"] == yr].groupby("commodity_desc")["value_bu"].sum()
 
             fig_nat = go.Figure()
-            # Stacked production bars
-            categories = ["Production", "Sep 1 Stocks", "WCMD Licensed", "Off-Farm (NASS)", "On-Farm (NASS)"]
+            # Stacked production bars (grain — bushels, left axis)
             for comm in ["CORN", "SOYBEANS", "WHEAT", "OATS", "SORGHUM"]:
                 val = prod_comm.get(comm, 0)
                 fig_nat.add_trace(go.Bar(
                     name=comm.title(),
-                    x=["Production"],
+                    x=["Production (bu)"],
                     y=[val / 1e9],
                     marker_color=COMM_COLORS[comm],
                     hovertemplate=f"{comm.title()}: %{{y:.2f}}B bu<extra></extra>",
@@ -7271,7 +7391,7 @@ def main():
             # Sep 1 Stocks single bar
             fig_nat.add_trace(go.Bar(
                 name="Sep 1 Stocks",
-                x=["Sep 1 Stocks"],
+                x=["Sep 1 Stocks (bu)"],
                 y=[nat_stocks / 1e9 if nat_stocks > 0 else 0],
                 marker_color="#60a5fa",
                 hovertemplate="Sep 1 Stocks: %{y:.2f}B bu<extra></extra>",
@@ -7289,11 +7409,23 @@ def main():
                     marker_color=color,
                     hovertemplate=f"{label}: %{{y:.2f}}B bu<extra></extra>",
                 ))
+            # Corn silage — secondary y-axis (tons)
+            if silage_df is not None:
+                nat_silage = cmp["silage_tons"].sum() if "silage_tons" in cmp.columns else 0
+                if nat_silage > 0:
+                    fig_nat.add_trace(go.Bar(
+                        name="Corn Silage (tons)",
+                        x=["Corn Silage (tons)"],
+                        y=[nat_silage / 1e6],
+                        marker_color="#d946ef",
+                        yaxis="y2",
+                        hovertemplate="Corn Silage: %{y:.1f}M tons<extra></extra>",
+                    ))
             fig_nat.update_layout(
                 paper_bgcolor=DARK, plot_bgcolor=SURFACE,
                 font=dict(color=TEXT, family="Arial"),
-                margin=dict(l=40, r=20, t=10, b=50),
-                height=380,
+                margin=dict(l=40, r=60, t=10, b=50),
+                height=400,
                 barmode="stack",
                 showlegend=True,
                 legend=dict(
@@ -7305,6 +7437,13 @@ def main():
                     title="Billion Bushels",
                     gridcolor=BORDER, tickfont=dict(color=MUTED),
                     title_font=dict(color=MUTED),
+                ),
+                yaxis2=dict(
+                    title="Million Tons (Silage)",
+                    overlaying="y", side="right",
+                    tickfont=dict(color="#d946ef", size=10),
+                    title_font=dict(color="#d946ef"),
+                    showgrid=False,
                 ),
                 hovermode="x unified",
             )
@@ -7422,6 +7561,7 @@ def main():
             tbl_disp = pd.DataFrame({
                 "State":                   tbl["state"],
                 f"Production {yr} (bu)":   tbl["production_bu"].map(_bu),
+                "Corn Silage (tons)":      tbl["silage_tons"].map(_bu) if "silage_tons" in tbl.columns else "—",
                 "Sep 1 Stocks (bu)":       tbl["sep1_stocks_bu"].map(_bu),
                 "WCMD Licensed (bu)":      tbl["wcmd_licensed_bu"].map(_bu),
                 "Off-Farm NASS (bu)":      tbl["nass_offfarm_bu"].map(_bu) if "nass_offfarm_bu" in tbl else "—",
