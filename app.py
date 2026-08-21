@@ -7644,11 +7644,11 @@ def main():
 
             # Total Storage line overlay
             _svc_line_color = {
-                "WCMD Licensed":       "#f59e0b",
-                "NASS Off-Farm":       "#1e2e22",
-                "NASS On-Farm":        "#1477cc",
-                "NASS Total (On+Off)": "#1e2e22",
-            }.get(storage_layer, "#1e2e22")
+                "WCMD Licensed":       "#c07000",
+                "NASS Off-Farm":       "#444444",
+                "NASS On-Farm":        "#1055aa",
+                "NASS Total (On+Off)": "#444444",
+            }.get(storage_layer, "#444444")
             fig_svc.add_trace(go.Scatter(
                 name=storage_layer,
                 x=df_chart["state"],
@@ -7666,9 +7666,9 @@ def main():
                     annotations_svc.append(dict(
                         x=row["state"],
                         y=row["total_supply_bu"] / 1e6 + row["total_supply_bu"] / 1e6 * 0.03,
-                        text=f"{row['ratio']:.2f}",
+                        text=f"<b>{row['ratio']:.2f}</b>",
                         showarrow=False,
-                        font=dict(size=9, color="#94a3b8"),
+                        font=dict(size=10, color="#000000"),
                         yanchor="bottom",
                     ))
 
@@ -7679,12 +7679,12 @@ def main():
                 prev_r = ratio_prev_map.get(row["state"])
                 delta_r = row["ratio"] - prev_r if (pd.notna(row["ratio"]) and prev_r is not None) else None
                 if delta_r is not None:
-                    color_d = "#10b981" if delta_r >= 0 else "#f87171"
+                    color_d = "#0a7a50" if delta_r >= 0 else "#c0392b"
                     yoy_anns.append(dict(
                         x=row["state"], y=min_y_svc,
                         text=f"<b style='color:{color_d}'>{delta_r:+.2f}</b>",
                         showarrow=False,
-                        font=dict(size=8),
+                        font=dict(size=9),
                         yanchor="top",
                     ))
 
@@ -7842,9 +7842,9 @@ def main():
                     hist_anns.append(dict(
                         x=str(int(row["year"])),
                         y=row["total_supply"] * 1.04,
-                        text=f"{row['ratio']:.2f}",
+                        text=f"<b>{row['ratio']:.2f}</b>",
                         showarrow=False,
-                        font=dict(size=9, color="#94a3b8"),
+                        font=dict(size=10, color="#000000"),
                         yanchor="bottom",
                     ))
 
