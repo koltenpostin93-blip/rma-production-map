@@ -8026,8 +8026,12 @@ def main():
                 df["period"] = pd.to_datetime(df["period"])
                 df["label"] = df["product"].map(_FEED_LABELS)
                 df["mbu_corn"] = df.apply(
-                    lambda r: r["mmlb"] * 1e6 / 56 / 1e6  # million lbs ÷ 56 lbs/bu ÷ 1M = million bu
+                    lambda r: r["mmlb"] * 1e6 / 56 / 1e6
                     if r["product"] == "EPOOBDAFC" else None, axis=1
+                )
+                df["mbu_sorg"] = df.apply(
+                    lambda r: r["mmlb"] * 1e6 / 56 / 1e6
+                    if r["product"] == "EPOOBDAFS" else None, axis=1
                 )
                 return df.sort_values("period")
 
@@ -8230,6 +8234,17 @@ def main():
                             hovertemplate="Corn: %{y:.1f}M bu<extra></extra>",
                         ))
 
+                    # Grain sorghum on primary axis (million bu), stacked with corn
+                    sorg_sub = feed_plot[feed_plot["product"] == "EPOOBDAFS"].sort_values("period")
+                    if not sorg_sub.empty:
+                        fig_feed.add_trace(go.Bar(
+                            x=sorg_sub["period"],
+                            y=sorg_sub["mbu_sorg"],
+                            name="Grain Sorghum (M bu)",
+                            marker_color=_FEED_COLORS["EPOOBDAFS"],
+                            hovertemplate="Grain Sorghum: %{y:,.1f}M bu<extra></extra>",
+                        ))
+
                     # Soy oil on secondary axis (million lbs)
                     soy_sub = feed_plot[feed_plot["product"] == "EPOOBDSO"].sort_values("period")
                     if not soy_sub.empty:
@@ -8263,13 +8278,13 @@ def main():
                         font=dict(color=TEXT, family="Arial"),
                         margin=dict(l=60, r=70, t=20, b=50),
                         height=380,
-                        barmode="overlay",
+                        barmode="stack",
                         showlegend=True,
                         legend=dict(font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
                                     orientation="h", yanchor="bottom", y=1.02, x=0),
                         xaxis=dict(title="Month", gridcolor=BORDER,
                                    tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
-                        yaxis=dict(title="Corn (Million Bushels)", gridcolor=BORDER,
+                        yaxis=dict(title="Grain Feedstocks (Million Bushels)", gridcolor=BORDER,
                                    tickfont=dict(color=_FEED_COLORS["EPOOBDAFC"]),
                                    title_font=dict(color=_FEED_COLORS["EPOOBDAFC"])),
                         yaxis2=dict(title="Million Lbs (Oils)", overlaying="y", side="right",
@@ -8292,20 +8307,25 @@ def main():
                         corn_mbu=("mbu_corn", "sum"),
                         corn_mmlb=("mmlb", "sum"),
                     ).reset_index()
+                    sorg_ann = feed_ann[feed_ann["product"] == "EPOOBDAFS"].groupby("year").agg(
+                        sorg_mbu=("mbu_sorg", "sum"),
+                        sorg_mmlb=("mmlb", "sum"),
+                    ).reset_index()
                     soy_ann  = feed_ann[feed_ann["product"] == "EPOOBDSO"].groupby("year").agg(
                         soy_mmlb=("mmlb", "sum"),
                     ).reset_index()
                     cno_ann  = feed_ann[feed_ann["product"] == "EPOOBDCNOD"].groupby("year").agg(
                         cno_mmlb=("mmlb", "sum"),
                     ).reset_index()
-                    ann_tbl = corn_ann.merge(soy_ann, on="year", how="outer") \
+                    ann_tbl = corn_ann.merge(sorg_ann, on="year", how="outer") \
+                                      .merge(soy_ann, on="year", how="outer") \
                                       .merge(cno_ann, on="year", how="outer") \
                                       .sort_values("year", ascending=False)
 
                     ann_disp = pd.DataFrame({
                         "Year":                  ann_tbl["year"].astype(str),
                         "Corn for Ethanol (M bu)": ann_tbl["corn_mbu"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
-                        "Corn for Ethanol (M lbs)":ann_tbl["corn_mmlb"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
+                        "Grain Sorghum for Ethanol (M bu)": ann_tbl["sorg_mbu"].map(lambda v: f"{v:,.1f}" if pd.notna(v) else "—"),
                         "Soy Oil for Biodiesel (M lbs)": ann_tbl["soy_mmlb"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
                         "Corn Oil for Biodiesel (M lbs)": ann_tbl["cno_mmlb"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
                     })
