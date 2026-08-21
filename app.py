@@ -973,6 +973,13 @@ def _load_wheat_class_prod(year: int, class_desc: str, cache_ver: str) -> float:
     return total
 
 
+@st.cache_data(show_spinner=False)
+def _load_yr_jun(crop: str, year: int, cache_ver: str) -> float:
+    """Return national Jun 1 stocks total (bushels) for a crop-year. 0.0 if unavailable."""
+    df = load_grain_stocks(crop, year, "FIRST OF JUN", cache_ver)
+    return float(df["Total"].sum()) if not df.empty else 0.0
+
+
 @st.cache_data
 def load_nass_county(crop: str, year: int = 2025,
                      cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
@@ -5392,10 +5399,9 @@ def main():
 
             # Wheat uses June 1 marketing year with winter/spring production split.
             # Other crops use Sep 1 marketing year with total production.
-            if _is_wheat:
-                _disapp_years = sorted([y for y in NASS_YEARS if y >= 2015])
-            else:
-                _disapp_years = sorted([y for y in NASS_YEARS if y <= stk_year - 1 and y >= 2015])
+            # 2026 is included: Sep 1 2026 not yet published, so it is estimated
+            # from Jun 1 2026 stocks using avg historical seasonal draw-down.
+            _disapp_years = sorted([y for y in NASS_YEARS if y >= 2015])
 
             _disapp_rows = []
             for _dy in _disapp_years:
@@ -5413,6 +5419,15 @@ def main():
                     if not _beg_bu:
                         continue
                     _junaug_supply = _beg_bu + _winter_bu
+                    _sep_is_est = False
+                    if not _sep_bu:
+                        # Sep 1 not yet published — estimate using avg historical Jun-Aug draw-down
+                        _hist_jd = [r["junaug_disapp"] for r in _disapp_rows
+                                    if r.get("junaug_disapp") and not r.get("is_est")]
+                        if _hist_jd:
+                            _est_jd  = sum(_hist_jd) / len(_hist_jd)
+                            _sep_bu  = max(0, _junaug_supply - _est_jd)
+                            _sep_is_est = True
                     _junaug_disapp = (_junaug_supply - _sep_bu) if _sep_bu else None
                     _annual_disapp = (_beg_bu + _total_prod - _end_bu) if _end_bu else None
                     _disapp_rows.append({
@@ -5426,6 +5441,7 @@ def main():
                         "end_bu":        _end_bu,
                         "junaug_disapp": _junaug_disapp,
                         "disapp_bu":     _annual_disapp,
+                        "is_est":        _sep_is_est,
                     })
                 else:
                     _sep_dy  = load_grain_stocks(stk_crop, _dy,     "FIRST OF SEP", _CACHE_VERSION)
@@ -5434,13 +5450,39 @@ def main():
                     _begin_bu = float(_sep_dy["Total"].sum())  if not _sep_dy.empty  else None
                     _end_bu   = float(_sep_dy1["Total"].sum()) if not _sep_dy1.empty else None
                     _prod_bu  = float(_prod_dy["Value"].sum()) if not _prod_dy.empty else None
-                    if _begin_bu and _end_bu and _prod_bu:
+                    if not _begin_bu or not _prod_bu:
+                        continue
+                    if _end_bu:
                         _disapp_rows.append({
                             "year":     _dy,
                             "begin_bu": _begin_bu,
                             "prod_bu":  _prod_bu,
                             "end_bu":   _end_bu,
                             "disapp_bu": _begin_bu + _prod_bu - _end_bu,
+                            "is_est":   False,
+                        })
+                    else:
+                        # Sep 1 end stocks not yet published — estimate from Jun 1
+                        # quarterly stocks scaled by avg historical Sep/Jun ratio.
+                        _jun_cur = load_grain_stocks(stk_crop, _dy + 1, "FIRST OF JUN", _CACHE_VERSION)
+                        _jun_bu  = float(_jun_cur["Total"].sum()) if not _jun_cur.empty else None
+                        if not _jun_bu:
+                            continue
+                        _hist_ratios = [
+                            r["end_bu"] / _load_yr_jun(stk_crop, r["year"] + 1, _CACHE_VERSION)
+                            for r in _disapp_rows
+                            if r.get("end_bu") and not r.get("is_est")
+                            and _load_yr_jun(stk_crop, r["year"] + 1, _CACHE_VERSION)
+                        ]
+                        _sep_ratio = (sum(_hist_ratios) / len(_hist_ratios)) if _hist_ratios else 1.0
+                        _est_end   = _jun_bu * _sep_ratio
+                        _disapp_rows.append({
+                            "year":     _dy,
+                            "begin_bu": _begin_bu,
+                            "prod_bu":  _prod_bu,
+                            "end_bu":   _est_end,
+                            "disapp_bu": _begin_bu + _prod_bu - _est_end,
+                            "is_est":   True,
                         })
 
             _plot_rows = ([r for r in _disapp_rows if r.get("disapp_bu") is not None] if not _is_wheat
@@ -5530,41 +5572,52 @@ def main():
                 _chart(fig_disapp, use_container_width=True, key="stk_disapp_chart",
                        config={"displayModeBar": False})
 
+                def _efmt(v, is_est, fmt="{:,.0f}"):
+                    """Format a bushel value; append ' (E)' if estimated."""
+                    if v is None or (isinstance(v, float) and pd.isna(v)):
+                        return "—"
+                    s = fmt.format(v / 1e6)
+                    return s + " (E)" if is_est else s
+
                 if _is_wheat:
                     _dd_disp = pd.DataFrame({
-                        "Mkt Year":                   _dd["year"].map(lambda y: f"Jun {y}–{y+1}"),
-                        "Jun 1 Beg (M bu)":           (_dd["begin_bu"]      / 1e6).map(lambda v: f"{v:,.0f}"),
-                        "Winter Wheat (M bu)":        (_dd["winter_bu"]     / 1e6).map(lambda v: f"{v:,.0f}" if v else "—"),
+                        "Mkt Year":              _dd.apply(lambda r: f"Jun {r['year']}–{r['year']+1}" + (" (E)" if r["is_est"] else ""), axis=1),
+                        "Jun 1 Beg (M bu)":      (_dd["begin_bu"]      / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Winter Wheat (M bu)":   (_dd["winter_bu"]     / 1e6).map(lambda v: f"{v:,.0f}" if v else "—"),
                         "Jun–Aug Supply (M bu)": (_dd["junaug_supply"] / 1e6).map(lambda v: f"{v:,.0f}"),
-                        "Sep 1 Stocks (M bu)":        _dd["sep_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v and not pd.isna(v)) else "—"),
-                        "Jun–Aug Disapp (M bu)": _dd["junaug_disapp"].map(lambda v: f"{v/1e6:,.0f}" if (v is not None and not pd.isna(v)) else "—"),
-                        "Spring+Durum (M bu)":        (_dd["spring_bu"]     / 1e6).map(lambda v: f"{v:,.0f}" if v else "—"),
-                        "Total Prod (M bu)":          (_dd["prod_bu"]       / 1e6).map(lambda v: f"{v:,.0f}"),
-                        "Jun 1 End (M bu)":           _dd["end_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v and not pd.isna(v)) else "—"),
-                        "Full-Yr Disapp (M bu)":      _dd["disapp_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v is not None and not pd.isna(v)) else "—"),
+                        "Sep 1 Stocks (M bu)":   _dd.apply(lambda r: _efmt(r["sep_bu"],   r["is_est"]), axis=1),
+                        "Jun–Aug Disapp (M bu)": _dd.apply(lambda r: _efmt(r["junaug_disapp"], r["is_est"]), axis=1),
+                        "Spring+Durum (M bu)":   (_dd["spring_bu"]     / 1e6).map(lambda v: f"{v:,.0f}" if v else "—"),
+                        "Total Prod (M bu)":     (_dd["prod_bu"]       / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Jun 1 End (M bu)":      _dd["end_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v and not pd.isna(v)) else "—"),
+                        "Full-Yr Disapp (M bu)": _dd.apply(lambda r: _efmt(r["disapp_bu"], r["is_est"]), axis=1),
                     })
                     st.dataframe(_dd_disp, use_container_width=True, hide_index=True)
                     st.caption(
                         "Wheat marketing year: Jun 1 → May 31.  "
                         "Jun–Aug Supply = Jun 1 Old Crop Stocks + Winter Wheat Production (harvested Jun–Jul).  "
-                        "Once Sep 1 stocks publish, Jun–Aug Disappearance = Jun–Aug Supply − Sep 1 Stocks.  "
+                        "Sep 1 Stocks = Jun–Aug Supply − avg historical Jun–Aug disappearance when formal report not yet published.  "
                         "Full-Year Disappearance = Jun 1 Beg + Total Production − Jun 1 End (following year).  "
+                        "(E) = estimated placeholder — replaced automatically once NASS publishes.  "
                         "Source: USDA NASS Grain Stocks & Crop Production."
                     )
                 else:
                     _dd_disp = pd.DataFrame({
-                        "Mkt Year": _dd["year"].map(lambda y: f"Sep {y}–{y+1}"),
+                        "Mkt Year":            _dd.apply(lambda r: f"Sep {r['year']}–{r['year']+1}" + (" (E)" if r["is_est"] else ""), axis=1),
                         "Beg Stocks (M bu)":   (_dd["begin_bu"] / 1e6).map(lambda v: f"{v:,.0f}"),
                         "Production (M bu)":   (_dd["prod_bu"]  / 1e6).map(lambda v: f"{v:,.0f}"),
                         "Total Supply (M bu)": ((_dd["begin_bu"]+_dd["prod_bu"])/1e6).map(lambda v: f"{v:,.0f}"),
-                        "End Stocks (M bu)":   (_dd["end_bu"]   / 1e6).map(lambda v: f"{v:,.0f}"),
-                        "Disappearance (M bu)":(_dd["disapp_bu"]/ 1e6).map(lambda v: f"{v:,.0f}"),
-                        "Disapp % of Supply":  (_dd["disapp_bu"]/(_dd["begin_bu"]+_dd["prod_bu"])*100
-                                               ).map(lambda v: f"{v:.1f}%"),
+                        "End Stocks (M bu)":   _dd.apply(lambda r: _efmt(r["end_bu"],   r["is_est"]), axis=1),
+                        "Disappearance (M bu)":_dd.apply(lambda r: _efmt(r["disapp_bu"], r["is_est"]), axis=1),
+                        "Disapp % of Supply":  _dd.apply(
+                            lambda r: f"{r['disapp_bu']/(r['begin_bu']+r['prod_bu'])*100:.1f}%" + (" (E)" if r["is_est"] else "")
+                            if r.get("disapp_bu") else "—", axis=1),
                     })
                     st.dataframe(_dd_disp, use_container_width=True, hide_index=True)
                     st.caption(
-                        f"Marketing year runs Sep 1 to Aug 31. Most recent year shown: Sep {_disapp_years[-1]}–{_disapp_years[-1]+1}. "
+                        f"Marketing year Sep 1–Aug 31. "
+                        "End Stocks (Sep 1) estimated from Jun 1 quarterly stocks × avg historical Sep/Jun ratio when formal report not yet published.  "
+                        "(E) = estimated placeholder — replaced automatically once NASS publishes.  "
                         "Source: USDA NASS Grain Stocks (Sep 1) and Crop Production."
                     )
             else:
