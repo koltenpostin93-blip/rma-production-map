@@ -33,7 +33,7 @@ NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
 NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
 
 # ── EIA API ────────────────────────────────────────────────────────────────────
-EIA_API_KEY   = ""          # Register free at https://www.eia.gov/opendata/register.php
+EIA_API_KEY   = "byhccqGIo65WWSSfpry5n3o3tMA66Z4Wf4oOwHpk"
 EIA_BASE_URL  = "https://api.eia.gov/v2/"
 NASS_YEARS             = list(range(2026, 2014, -1))   # 2026 → 2015
 _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % reporting KPI
@@ -7946,21 +7946,23 @@ def main():
             )
         else:
             @st.cache_data(ttl=3600, show_spinner=False)
-            def load_eia_ethanol_monthly(months: int = 60) -> pd.DataFrame:
-                """Monthly ethanol plant production by PADD (kbbl/day)."""
+            def load_eia_ethanol_weekly(weeks: int = 260) -> pd.DataFrame:
+                """Weekly ethanol plant production by PADD (kbbl/day).
+                Aggregated to monthly averages for trend charts."""
                 rows = []
                 for area in ["NUS", "R10", "R20", "R30", "R40", "R50"]:
-                    url = (
-                        f"{EIA_BASE_URL}petroleum/pnp/wprode/data"
-                        f"?api_key={EIA_API_KEY}"
-                        f"&frequency=monthly"
-                        f"&facets[product][]=EPOOXE"
-                        f"&facets[process][]=YOP"
-                        f"&facets[duoarea][]={area}"
-                        f"&data[]=value"
-                        f"&sort[0][column]=period&sort[0][direction]=desc"
-                        f"&length={months}"
-                    )
+                    params = urllib.parse.urlencode({
+                        "api_key": EIA_API_KEY,
+                        "frequency": "weekly",
+                        "data[]": "value",
+                        "facets[product][]": "EPOOXE",
+                        "facets[process][]": "YOP",
+                        f"facets[duoarea][]": area,
+                        "sort[0][column]": "period",
+                        "sort[0][direction]": "desc",
+                        "length": str(weeks),
+                    }, doseq=False)
+                    url = f"{EIA_BASE_URL}petroleum/pnp/wprode/data?{params}"
                     try:
                         with urllib.request.urlopen(url, timeout=30) as r:
                             data = json.load(r).get("response", {}).get("data", [])
@@ -7978,10 +7980,16 @@ def main():
                 if not rows:
                     return pd.DataFrame()
                 df = pd.DataFrame(rows)
-                df["period"] = pd.to_datetime(df["period"])
-                df["mgal_week"] = df["kbblday"] * 42 / 1000 * 7   # kbbl/day → million gallons/week
-                df["mgal_year"] = df["kbblday"] * 42 / 1000 * 365  # → million gallons/year
-                return df.sort_values("period")
+                df["period_dt"] = pd.to_datetime(df["period"])
+                df["mgal_day"] = df["kbblday"] * 42 / 1000   # kbbl/day → million gallons/day
+                # Monthly averages for trend charting
+                df["month"] = df["period_dt"].dt.to_period("M").dt.to_timestamp()
+                monthly = df.groupby(["month", "padd"]).agg(
+                    kbblday=("kbblday", "mean"),
+                    mgal_day=("mgal_day", "mean"),
+                ).reset_index()
+                monthly = monthly.rename(columns={"month": "period"})
+                return monthly.sort_values("period")
 
             @st.cache_data(ttl=3600, show_spinner=False)
             def load_eia_feedstocks(months: int = 72) -> pd.DataFrame:
@@ -8024,7 +8032,7 @@ def main():
                 return df.sort_values("period")
 
             with st.spinner("Loading EIA data…"):
-                eth_df  = load_eia_ethanol_monthly(months=72)
+                eth_df  = load_eia_ethanol_weekly(weeks=365)
                 feed_df = load_eia_feedstocks(months=72)
 
             if eth_df.empty and feed_df.empty:
@@ -8112,7 +8120,6 @@ def main():
                         (eth_df["period"].dt.year >= yr_start) &
                         (eth_df["period"].dt.year <= yr_end)
                     ].copy()
-                    eth_plot["mgal_day"] = eth_plot["kbblday"] * 42 / 1000  # kbbl/day → Mgal/day
 
                     fig_eth = go.Figure()
                     for area in ["R10","R20","R30","R40","R50"]:
@@ -8128,13 +8135,12 @@ def main():
                             fillcolor=_PADD_COLORS[area],
                             hovertemplate=f"{_PADD_LABELS[area]}: %{{y:.1f}} Mgal/day<extra></extra>",
                         ))
-                    # US Total overlay line
+                    # US Total overlay line (monthly avg)
                     nat_plot = eth_df[
                         (eth_df["padd"] == "NUS") &
                         (eth_df["period"].dt.year >= yr_start) &
                         (eth_df["period"].dt.year <= yr_end)
                     ].sort_values("period")
-                    nat_plot["mgal_day"] = nat_plot["kbblday"] * 42 / 1000
                     fig_eth.add_trace(go.Scatter(
                         x=nat_plot["period"], y=nat_plot["mgal_day"],
                         mode="lines",
@@ -8169,11 +8175,7 @@ def main():
                     padd_avg = eth_df[
                         (eth_df["padd"] != "NUS") &
                         (eth_df["period"] >= cutoff_12m)
-                    ].groupby("padd")["mgal_day"].mean().reset_index() if "mgal_day" in eth_df.columns else pd.DataFrame()
-                    if padd_avg.empty:
-                        _tmp = eth_df[(eth_df["padd"] != "NUS") & (eth_df["period"] >= cutoff_12m)].copy()
-                        _tmp["mgal_day"] = _tmp["kbblday"] * 42 / 1000
-                        padd_avg = _tmp.groupby("padd")["mgal_day"].mean().reset_index()
+                    ].groupby("padd")["mgal_day"].mean().reset_index()
                     padd_avg["label"] = padd_avg["padd"].map(_PADD_LABELS)
                     padd_avg["color"] = padd_avg["padd"].map(_PADD_COLORS)
                     padd_avg = padd_avg.sort_values("mgal_day", ascending=True)
