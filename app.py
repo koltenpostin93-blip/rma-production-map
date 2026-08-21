@@ -31,6 +31,10 @@ LOGO_FULL  = HERE / "assets" / "logo-full.png"
 # ── NASS API ───────────────────────────────────────────────────────────────────
 NASS_API_KEY  = "9A6D1EB8-4D94-3221-BA0C-ADD4533EA0C1"
 NASS_BASE_URL = "https://quickstats.nass.usda.gov/api/api_GET/"
+
+# ── EIA API ────────────────────────────────────────────────────────────────────
+EIA_API_KEY   = ""          # Register free at https://www.eia.gov/opendata/register.php
+EIA_BASE_URL  = "https://api.eia.gov/v2/"
 NASS_YEARS             = list(range(2026, 2014, -1))   # 2026 → 2015
 _NASS_BENCHMARK_YEAR   = 2023   # most-complete county year — used for % reporting KPI
 
@@ -3687,11 +3691,12 @@ def main():
         unsafe_allow_html=True,
     )
 
-    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_livestock, tab_aqua, tab_proc, tab_wcmd, tab_storage_cmp, tab_about = st.tabs([
+    tab_nass, tab_rma, tab_stocks, tab_acreage, tab_livestock, tab_aqua, tab_proc, tab_wcmd, tab_storage_cmp, tab_eia, tab_about = st.tabs([
         "🌾  NASS Production", "📋  RMA",
         "📦  Grain Stocks", "🌱  Acreage Summary", "🐄  Livestock",
         "🐟  Aquaculture", "🏭  Processing",
         "🏦  Grain Warehouses", "⚖️  Storage vs. Production",
+        "🔋  Biofuels (EIA)",
         "📖  About the Data",
     ])
 
@@ -7890,6 +7895,425 @@ def main():
                 "Ratio = Storage ÷ Supply; values &lt; 1.00 indicate a space deficit.</p>",
                 unsafe_allow_html=True,
             )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # EIA BIOFUELS TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with tab_eia:
+        st.markdown(
+            f"<h3 style='color:{ACCENT};margin-bottom:4px;'>US Biofuels — EIA Data</h3>"
+            f"<p style='color:{MUTED};font-size:0.85rem;margin-top:0;'>"
+            "Ethanol and biodiesel production by PADD region (weekly/monthly) and "
+            "national feedstock consumption (corn → ethanol, soybean oil → biodiesel). "
+            "Source: US Energy Information Administration (EIA) Open Data API.</p>",
+            unsafe_allow_html=True,
+        )
+
+        _PADD_LABELS = {
+            "NUS": "US Total",
+            "R10": "PADD 1 — East Coast",
+            "R20": "PADD 2 — Midwest",
+            "R30": "PADD 3 — Gulf Coast",
+            "R40": "PADD 4 — Rocky Mountain",
+            "R50": "PADD 5 — West Coast",
+        }
+        _PADD_COLORS = {
+            "NUS": "#94a3b8",
+            "R10": "#60a5fa",
+            "R20": "#34d399",
+            "R30": "#f59e0b",
+            "R40": "#c084fc",
+            "R50": "#f87171",
+        }
+        _FEED_LABELS = {
+            "EPOOBDAFC": "Corn (→ Ethanol)",
+            "EPOOBDAFS": "Grain Sorghum (→ Ethanol)",
+            "EPOOBDSO":  "Soybean Oil (→ Biodiesel)",
+            "EPOOBDCNOD":"Corn Oil (→ Biodiesel)",
+        }
+        _FEED_COLORS = {
+            "EPOOBDAFC": "#f59e0b",
+            "EPOOBDAFS": "#94a3b8",
+            "EPOOBDSO":  "#34d399",
+            "EPOOBDCNOD":"#60a5fa",
+        }
+
+        if not EIA_API_KEY:
+            st.warning(
+                "⚠️ EIA API key not configured. "
+                "Register for a free key at https://www.eia.gov/opendata/register.php "
+                "then set `EIA_API_KEY` at the top of app.py."
+            )
+        else:
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def load_eia_ethanol_monthly(months: int = 60) -> pd.DataFrame:
+                """Monthly ethanol plant production by PADD (kbbl/day)."""
+                rows = []
+                for area in ["NUS", "R10", "R20", "R30", "R40", "R50"]:
+                    url = (
+                        f"{EIA_BASE_URL}petroleum/pnp/wprode/data"
+                        f"?api_key={EIA_API_KEY}"
+                        f"&frequency=monthly"
+                        f"&facets[product][]=EPOOXE"
+                        f"&facets[process][]=YOP"
+                        f"&facets[duoarea][]={area}"
+                        f"&data[]=value"
+                        f"&sort[0][column]=period&sort[0][direction]=desc"
+                        f"&length={months}"
+                    )
+                    try:
+                        with urllib.request.urlopen(url, timeout=30) as r:
+                            data = json.load(r).get("response", {}).get("data", [])
+                        for rec in data:
+                            try:
+                                rows.append({
+                                    "period": rec["period"],
+                                    "padd": area,
+                                    "kbblday": float(rec["value"]) if rec["value"] not in (None, "") else None,
+                                })
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                if not rows:
+                    return pd.DataFrame()
+                df = pd.DataFrame(rows)
+                df["period"] = pd.to_datetime(df["period"])
+                df["mgal_week"] = df["kbblday"] * 42 / 1000 * 7   # kbbl/day → million gallons/week
+                df["mgal_year"] = df["kbblday"] * 42 / 1000 * 365  # → million gallons/year
+                return df.sort_values("period")
+
+            @st.cache_data(ttl=3600, show_spinner=False)
+            def load_eia_feedstocks(months: int = 72) -> pd.DataFrame:
+                """Monthly biofuel feedstock consumption — national (million lbs)."""
+                rows = []
+                for prod in ["EPOOBDAFC", "EPOOBDAFS", "EPOOBDSO", "EPOOBDCNOD"]:
+                    url = (
+                        f"{EIA_BASE_URL}petroleum/pnp/feedbiofuel/data"
+                        f"?api_key={EIA_API_KEY}"
+                        f"&frequency=monthly"
+                        f"&facets[product][]={prod}"
+                        f"&facets[duoarea][]=NUS"
+                        f"&data[]=value"
+                        f"&sort[0][column]=period&sort[0][direction]=desc"
+                        f"&length={months}"
+                    )
+                    try:
+                        with urllib.request.urlopen(url, timeout=30) as r:
+                            data = json.load(r).get("response", {}).get("data", [])
+                        for rec in data:
+                            try:
+                                rows.append({
+                                    "period": rec["period"],
+                                    "product": prod,
+                                    "mmlb": float(rec["value"]) if rec["value"] not in (None, "") else None,
+                                })
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                if not rows:
+                    return pd.DataFrame()
+                df = pd.DataFrame(rows)
+                df["period"] = pd.to_datetime(df["period"])
+                df["label"] = df["product"].map(_FEED_LABELS)
+                df["mbu_corn"] = df.apply(
+                    lambda r: r["mmlb"] * 1e6 / 56 / 1e6  # million lbs ÷ 56 lbs/bu ÷ 1M = million bu
+                    if r["product"] == "EPOOBDAFC" else None, axis=1
+                )
+                return df.sort_values("period")
+
+            with st.spinner("Loading EIA data…"):
+                eth_df  = load_eia_ethanol_monthly(months=72)
+                feed_df = load_eia_feedstocks(months=72)
+
+            if eth_df.empty and feed_df.empty:
+                st.error("Could not fetch EIA data. Check API key or network connection.")
+            else:
+                # ── KPI row ───────────────────────────────────────────────────
+                if not eth_df.empty:
+                    latest_m = eth_df["period"].max()
+                    prev_yr_m = latest_m - pd.DateOffset(years=1)
+                    nat_latest = eth_df[(eth_df["padd"] == "NUS") & (eth_df["period"] == latest_m)]["kbblday"].sum()
+                    nat_prev   = eth_df[(eth_df["padd"] == "NUS") &
+                                        (eth_df["period"].dt.year == (latest_m - pd.DateOffset(years=1)).year) &
+                                        (eth_df["period"].dt.month == latest_m.month)]["kbblday"].sum()
+                    nat_mgal_yr = nat_latest * 42 / 1000 * 365
+                    delta_pct   = (nat_latest - nat_prev) / nat_prev * 100 if nat_prev > 0 else 0
+                else:
+                    latest_m = None
+                    nat_latest = nat_mgal_yr = delta_pct = 0
+
+                corn_latest = feed_df[
+                    (feed_df["product"] == "EPOOBDAFC") &
+                    (feed_df["period"] == feed_df[feed_df["product"] == "EPOOBDAFC"]["period"].max())
+                ]["mbu_corn"].sum() if not feed_df.empty else 0
+
+                soy_latest = feed_df[
+                    (feed_df["product"] == "EPOOBDSO") &
+                    (feed_df["period"] == feed_df[feed_df["product"] == "EPOOBDSO"]["period"].max())
+                ]["mmlb"].sum() if not feed_df.empty else 0
+
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric(
+                    "US Ethanol Production",
+                    f"{nat_latest:,.0f} kbbl/day" if nat_latest > 0 else "—",
+                    delta=f"{delta_pct:+.1f}% YoY" if delta_pct != 0 else None,
+                    help=f"Latest month: {latest_m.strftime('%b %Y') if latest_m else '—'}",
+                )
+                k2.metric(
+                    "Annualized Rate",
+                    f"{nat_mgal_yr:,.0f} M gal/yr" if nat_mgal_yr > 0 else "—",
+                    help="kbbl/day × 42 gal × 365 days",
+                )
+                k3.metric(
+                    "Corn Feedstock (latest mo.)",
+                    f"{corn_latest:,.0f} M bu" if corn_latest > 0 else "—",
+                    help="Corn consumed for ethanol production (million bushels)",
+                )
+                k4.metric(
+                    "Soybean Oil Feedstock",
+                    f"{soy_latest:,.0f} M lbs" if soy_latest > 0 else "—",
+                    help="Soybean oil consumed for biodiesel production (million lbs)",
+                )
+
+                st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+                # ── Controls ──────────────────────────────────────────────────
+                ec1, ec2 = st.columns([2, 1])
+                with ec1:
+                    eia_yr_range = st.slider(
+                        "Year range",
+                        min_value=2010, max_value=datetime.datetime.now().year,
+                        value=(2015, datetime.datetime.now().year),
+                        key="eia_yr_range",
+                    )
+                with ec2:
+                    eia_padds = st.multiselect(
+                        "PADD Regions",
+                        options=["R10","R20","R30","R40","R50"],
+                        default=["R10","R20","R30","R40","R50"],
+                        format_func=lambda x: _PADD_LABELS[x],
+                        key="eia_padds",
+                    )
+
+                yr_start, yr_end = eia_yr_range
+
+                # ── PADD Ethanol Production — stacked area / bar ──────────────
+                st.markdown(
+                    f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:12px;'>"
+                    "Ethanol Plant Production by PADD Region (Monthly, Million Gallons/Day)</h4>",
+                    unsafe_allow_html=True,
+                )
+
+                if not eth_df.empty:
+                    eth_plot = eth_df[
+                        (eth_df["padd"].isin(eia_padds)) &
+                        (eth_df["period"].dt.year >= yr_start) &
+                        (eth_df["period"].dt.year <= yr_end)
+                    ].copy()
+                    eth_plot["mgal_day"] = eth_plot["kbblday"] * 42 / 1000  # kbbl/day → Mgal/day
+
+                    fig_eth = go.Figure()
+                    for area in ["R10","R20","R30","R40","R50"]:
+                        if area not in eia_padds:
+                            continue
+                        sub = eth_plot[eth_plot["padd"] == area].sort_values("period")
+                        fig_eth.add_trace(go.Scatter(
+                            x=sub["period"], y=sub["mgal_day"],
+                            mode="lines",
+                            name=_PADD_LABELS[area],
+                            line=dict(color=_PADD_COLORS[area], width=1.5),
+                            stackgroup="one",
+                            fillcolor=_PADD_COLORS[area],
+                            hovertemplate=f"{_PADD_LABELS[area]}: %{{y:.1f}} Mgal/day<extra></extra>",
+                        ))
+                    # US Total overlay line
+                    nat_plot = eth_df[
+                        (eth_df["padd"] == "NUS") &
+                        (eth_df["period"].dt.year >= yr_start) &
+                        (eth_df["period"].dt.year <= yr_end)
+                    ].sort_values("period")
+                    nat_plot["mgal_day"] = nat_plot["kbblday"] * 42 / 1000
+                    fig_eth.add_trace(go.Scatter(
+                        x=nat_plot["period"], y=nat_plot["mgal_day"],
+                        mode="lines",
+                        name="US Total",
+                        line=dict(color="#ffffff", width=2, dash="dot"),
+                        hovertemplate="US Total: %{y:.1f} Mgal/day<extra></extra>",
+                    ))
+                    fig_eth.update_layout(
+                        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                        font=dict(color=TEXT, family="Arial"),
+                        margin=dict(l=60, r=20, t=20, b=50),
+                        height=380,
+                        showlegend=True,
+                        legend=dict(font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
+                                    orientation="h", yanchor="bottom", y=1.02, x=0),
+                        xaxis=dict(title="Month", gridcolor=BORDER, tickfont=dict(color=MUTED),
+                                   title_font=dict(color=MUTED)),
+                        yaxis=dict(title="Million Gallons/Day", gridcolor=BORDER,
+                                   tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
+                        hovermode="x unified",
+                    )
+                    _add_logo(fig_eth, logo_50yr, size=0.15, opacity=1.0)
+                    _chart(fig_eth, use_container_width=True, config={"displayModeBar": False})
+
+                    # ── PADD snapshot bar (latest 12-month average) ───────────
+                    st.markdown(
+                        f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>"
+                        "PADD Region Share — Latest 12-Month Average</h4>",
+                        unsafe_allow_html=True,
+                    )
+                    cutoff_12m = eth_df["period"].max() - pd.DateOffset(months=11)
+                    padd_avg = eth_df[
+                        (eth_df["padd"] != "NUS") &
+                        (eth_df["period"] >= cutoff_12m)
+                    ].groupby("padd")["mgal_day"].mean().reset_index() if "mgal_day" in eth_df.columns else pd.DataFrame()
+                    if padd_avg.empty:
+                        _tmp = eth_df[(eth_df["padd"] != "NUS") & (eth_df["period"] >= cutoff_12m)].copy()
+                        _tmp["mgal_day"] = _tmp["kbblday"] * 42 / 1000
+                        padd_avg = _tmp.groupby("padd")["mgal_day"].mean().reset_index()
+                    padd_avg["label"] = padd_avg["padd"].map(_PADD_LABELS)
+                    padd_avg["color"] = padd_avg["padd"].map(_PADD_COLORS)
+                    padd_avg = padd_avg.sort_values("mgal_day", ascending=True)
+                    padd_avg["share_pct"] = padd_avg["mgal_day"] / padd_avg["mgal_day"].sum() * 100
+
+                    fig_padd = go.Figure(go.Bar(
+                        x=padd_avg["mgal_day"],
+                        y=padd_avg["label"],
+                        orientation="h",
+                        marker_color=padd_avg["color"],
+                        text=padd_avg.apply(lambda r: f"{r['mgal_day']:.1f} ({r['share_pct']:.0f}%)", axis=1),
+                        textposition="outside",
+                        textfont=dict(color=TEXT, size=10),
+                        hovertemplate="%{y}: %{x:.1f} Mgal/day<extra></extra>",
+                    ))
+                    fig_padd.update_layout(
+                        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                        font=dict(color=TEXT, family="Arial"),
+                        margin=dict(l=20, r=100, t=10, b=50),
+                        height=300,
+                        xaxis=dict(title="Avg. Million Gallons/Day", gridcolor=BORDER,
+                                   tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
+                        yaxis=dict(tickfont=dict(color=TEXT), gridcolor=BORDER),
+                    )
+                    _add_logo(fig_padd, logo_50yr, size=0.15, opacity=1.0)
+                    _chart(fig_padd, use_container_width=True, config={"displayModeBar": False})
+
+                # ── Feedstock Consumption ─────────────────────────────────────
+                if not feed_df.empty:
+                    st.markdown("<hr style='border-color:#3a3f47;margin:24px 0 16px 0;'>",
+                                unsafe_allow_html=True)
+                    st.markdown(
+                        f"<h4 style='color:{ACCENT};margin-bottom:4px;'>Biofuel Feedstock Consumption — National (Monthly)</h4>"
+                        f"<p style='color:{MUTED};font-size:0.82rem;margin-top:0;'>"
+                        "Feedstocks consumed at US biofuel plants. Corn converted to million bushels (÷ 56 lbs/bu). "
+                        "Data available from Jan 2019. Source: EIA Monthly Biofuels Capacity and Feedstocks Update.</p>",
+                        unsafe_allow_html=True,
+                    )
+
+                    feed_plot = feed_df[feed_df["period"].dt.year.between(yr_start, yr_end)].copy()
+
+                    fig_feed = go.Figure()
+
+                    # Corn on primary axis (million bu)
+                    corn_sub = feed_plot[feed_plot["product"] == "EPOOBDAFC"].sort_values("period")
+                    if not corn_sub.empty:
+                        fig_feed.add_trace(go.Bar(
+                            x=corn_sub["period"],
+                            y=corn_sub["mbu_corn"],
+                            name="Corn (M bu)",
+                            marker_color=_FEED_COLORS["EPOOBDAFC"],
+                            hovertemplate="Corn: %{y:.1f}M bu<extra></extra>",
+                        ))
+
+                    # Soy oil on secondary axis (million lbs)
+                    soy_sub = feed_plot[feed_plot["product"] == "EPOOBDSO"].sort_values("period")
+                    if not soy_sub.empty:
+                        fig_feed.add_trace(go.Scatter(
+                            x=soy_sub["period"],
+                            y=soy_sub["mmlb"],
+                            name="Soy Oil (M lbs)",
+                            mode="lines+markers",
+                            line=dict(color=_FEED_COLORS["EPOOBDSO"], width=2),
+                            marker=dict(size=4),
+                            yaxis="y2",
+                            hovertemplate="Soy Oil: %{y:,.0f}M lbs<extra></extra>",
+                        ))
+
+                    # Corn oil for biodiesel (secondary axis, M lbs)
+                    cno_sub = feed_plot[feed_plot["product"] == "EPOOBDCNOD"].sort_values("period")
+                    if not cno_sub.empty:
+                        fig_feed.add_trace(go.Scatter(
+                            x=cno_sub["period"],
+                            y=cno_sub["mmlb"],
+                            name="Corn Oil (M lbs)",
+                            mode="lines+markers",
+                            line=dict(color=_FEED_COLORS["EPOOBDCNOD"], width=1.5, dash="dot"),
+                            marker=dict(size=4),
+                            yaxis="y2",
+                            hovertemplate="Corn Oil: %{y:,.0f}M lbs<extra></extra>",
+                        ))
+
+                    fig_feed.update_layout(
+                        paper_bgcolor=DARK, plot_bgcolor=SURFACE,
+                        font=dict(color=TEXT, family="Arial"),
+                        margin=dict(l=60, r=70, t=20, b=50),
+                        height=380,
+                        barmode="overlay",
+                        showlegend=True,
+                        legend=dict(font=dict(color=TEXT, size=10), bgcolor="rgba(0,0,0,0)",
+                                    orientation="h", yanchor="bottom", y=1.02, x=0),
+                        xaxis=dict(title="Month", gridcolor=BORDER,
+                                   tickfont=dict(color=MUTED), title_font=dict(color=MUTED)),
+                        yaxis=dict(title="Corn (Million Bushels)", gridcolor=BORDER,
+                                   tickfont=dict(color=_FEED_COLORS["EPOOBDAFC"]),
+                                   title_font=dict(color=_FEED_COLORS["EPOOBDAFC"])),
+                        yaxis2=dict(title="Million Lbs (Oils)", overlaying="y", side="right",
+                                    tickfont=dict(color=_FEED_COLORS["EPOOBDSO"], size=10),
+                                    title_font=dict(color=_FEED_COLORS["EPOOBDSO"]),
+                                    showgrid=False),
+                        hovermode="x unified",
+                    )
+                    _add_logo(fig_feed, logo_50yr, size=0.15, opacity=1.0)
+                    _chart(fig_feed, use_container_width=True, config={"displayModeBar": False})
+
+                    # ── Annual feedstock table ────────────────────────────────
+                    st.markdown(
+                        f"<h4 style='color:{ACCENT};margin-bottom:6px;margin-top:20px;'>Annual Feedstock Summary</h4>",
+                        unsafe_allow_html=True,
+                    )
+                    feed_ann = feed_df.copy()
+                    feed_ann["year"] = feed_ann["period"].dt.year
+                    corn_ann = feed_ann[feed_ann["product"] == "EPOOBDAFC"].groupby("year").agg(
+                        corn_mbu=("mbu_corn", "sum"),
+                        corn_mmlb=("mmlb", "sum"),
+                    ).reset_index()
+                    soy_ann  = feed_ann[feed_ann["product"] == "EPOOBDSO"].groupby("year").agg(
+                        soy_mmlb=("mmlb", "sum"),
+                    ).reset_index()
+                    cno_ann  = feed_ann[feed_ann["product"] == "EPOOBDCNOD"].groupby("year").agg(
+                        cno_mmlb=("mmlb", "sum"),
+                    ).reset_index()
+                    ann_tbl = corn_ann.merge(soy_ann, on="year", how="outer") \
+                                      .merge(cno_ann, on="year", how="outer") \
+                                      .sort_values("year", ascending=False)
+
+                    ann_disp = pd.DataFrame({
+                        "Year":                  ann_tbl["year"].astype(str),
+                        "Corn for Ethanol (M bu)": ann_tbl["corn_mbu"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
+                        "Corn for Ethanol (M lbs)":ann_tbl["corn_mmlb"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
+                        "Soy Oil for Biodiesel (M lbs)": ann_tbl["soy_mmlb"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
+                        "Corn Oil for Biodiesel (M lbs)": ann_tbl["cno_mmlb"].map(lambda v: f"{v:,.0f}" if pd.notna(v) else "—"),
+                    })
+                    st.dataframe(ann_disp, use_container_width=True, hide_index=True)
+
+                    st.caption(
+                        "EIA Monthly Biofuels Capacity and Feedstocks Update (petroleum/pnp/feedbiofuel). "
+                        "Feedstock data available from Jan 2019 – present. "
+                        "Ethanol production data: petroleum/pnp/wprode, PADD 1–5 + US Total, Jun 2010 – present."
+                    )
 
     # ── Disclaimer footer ────────────────────────────────────────────────────
     st.markdown("<hr style='border-color:#3a3f47;margin-top:40px;margin-bottom:12px;'>", unsafe_allow_html=True)
