@@ -936,6 +936,43 @@ def load_nass_state(crop: str, year: int, stat_type: str,
     return df[["State", "Value"]].reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def _load_wheat_class_prod(year: int, class_desc: str, cache_ver: str) -> float:
+    """Return national total wheat production (bushels) for a specific class_desc.
+    Used to split winter vs. spring/durum for the June-based marketing year."""
+    params = {
+        "key":                   NASS_API_KEY,
+        "source_desc":           "SURVEY",
+        "sector_desc":           "CROPS",
+        "agg_level_desc":        "STATE",
+        "domain_desc":           "TOTAL",
+        "reference_period_desc": "YEAR",
+        "year":                  str(year),
+        "commodity_desc":        "WHEAT",
+        "class_desc":            class_desc,
+        "prodn_practice_desc":   "ALL PRODUCTION PRACTICES",
+        "statisticcat_desc":     "PRODUCTION",
+        "unit_desc":             "BU",
+        "format":                "JSON",
+    }
+    try:
+        with urllib.request.urlopen(
+            NASS_BASE_URL + "?" + urllib.parse.urlencode(params), timeout=45
+        ) as r:
+            records = json.load(r).get("data", [])
+    except Exception:
+        return 0.0
+    total = 0.0
+    for rec in records:
+        try:
+            v = float(str(rec.get("Value", "0")).replace(",", ""))
+            if v > 0:
+                total += v
+        except (ValueError, TypeError):
+            pass
+    return total
+
+
 @st.cache_data
 def load_nass_county(crop: str, year: int = 2025,
                      cache_ver: str = _CACHE_VERSION) -> pd.DataFrame:
@@ -5351,55 +5388,130 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            _disapp_years = sorted([y for y in NASS_YEARS if y <= stk_year - 1 and y >= 2015])
+            _is_wheat = (stk_crop == "Wheat")
+
+            # Wheat uses June 1 marketing year with winter/spring production split.
+            # Other crops use Sep 1 marketing year with total production.
+            if _is_wheat:
+                _disapp_years = sorted([y for y in NASS_YEARS if y >= 2015])
+            else:
+                _disapp_years = sorted([y for y in NASS_YEARS if y <= stk_year - 1 and y >= 2015])
+
             _disapp_rows = []
             for _dy in _disapp_years:
-                _sep_dy  = load_grain_stocks(stk_crop, _dy,     "FIRST OF SEP", _CACHE_VERSION)
-                _sep_dy1 = load_grain_stocks(stk_crop, _dy + 1, "FIRST OF SEP", _CACHE_VERSION)
-                _prod_dy = _load_state_for_stat(stk_crop, _dy, "production", _CACHE_VERSION)
-                _begin_bu = float(_sep_dy["Total"].sum())  if not _sep_dy.empty  else None
-                _end_bu   = float(_sep_dy1["Total"].sum()) if not _sep_dy1.empty else None
-                _prod_bu  = float(_prod_dy["Value"].sum()) if not _prod_dy.empty else None
-                if _begin_bu and _end_bu and _prod_bu:
+                if _is_wheat:
+                    _jun_dy  = load_grain_stocks("Wheat", _dy,     "FIRST OF JUN", _CACHE_VERSION)
+                    _sep_dy  = load_grain_stocks("Wheat", _dy,     "FIRST OF SEP", _CACHE_VERSION)
+                    _jun_dy1 = load_grain_stocks("Wheat", _dy + 1, "FIRST OF JUN", _CACHE_VERSION)
+                    _beg_bu = float(_jun_dy["Total"].sum())  if not _jun_dy.empty  else None
+                    _sep_bu = float(_sep_dy["Total"].sum())  if not _sep_dy.empty  else None
+                    _end_bu = float(_jun_dy1["Total"].sum()) if not _jun_dy1.empty else None
+                    _winter_bu = _load_wheat_class_prod(_dy, "WINTER",               _CACHE_VERSION)
+                    _spring_bu = (_load_wheat_class_prod(_dy, "SPRING, (EXCL DURUM)", _CACHE_VERSION) +
+                                  _load_wheat_class_prod(_dy, "SPRING, DURUM",        _CACHE_VERSION))
+                    _total_prod = _winter_bu + _spring_bu
+                    if not _beg_bu:
+                        continue
+                    _junaug_supply = _beg_bu + _winter_bu
+                    _junaug_disapp = (_junaug_supply - _sep_bu) if _sep_bu else None
+                    _annual_disapp = (_beg_bu + _total_prod - _end_bu) if _end_bu else None
                     _disapp_rows.append({
-                        "year":     _dy,
-                        "begin_bu": _begin_bu,
-                        "prod_bu":  _prod_bu,
-                        "end_bu":   _end_bu,
-                        "disapp_bu": _begin_bu + _prod_bu - _end_bu,
+                        "year":          _dy,
+                        "begin_bu":      _beg_bu,
+                        "winter_bu":     _winter_bu,
+                        "spring_bu":     _spring_bu,
+                        "prod_bu":       _total_prod,
+                        "junaug_supply": _junaug_supply,
+                        "sep_bu":        _sep_bu,
+                        "end_bu":        _end_bu,
+                        "junaug_disapp": _junaug_disapp,
+                        "disapp_bu":     _annual_disapp,
                     })
+                else:
+                    _sep_dy  = load_grain_stocks(stk_crop, _dy,     "FIRST OF SEP", _CACHE_VERSION)
+                    _sep_dy1 = load_grain_stocks(stk_crop, _dy + 1, "FIRST OF SEP", _CACHE_VERSION)
+                    _prod_dy = _load_state_for_stat(stk_crop, _dy, "production", _CACHE_VERSION)
+                    _begin_bu = float(_sep_dy["Total"].sum())  if not _sep_dy.empty  else None
+                    _end_bu   = float(_sep_dy1["Total"].sum()) if not _sep_dy1.empty else None
+                    _prod_bu  = float(_prod_dy["Value"].sum()) if not _prod_dy.empty else None
+                    if _begin_bu and _end_bu and _prod_bu:
+                        _disapp_rows.append({
+                            "year":     _dy,
+                            "begin_bu": _begin_bu,
+                            "prod_bu":  _prod_bu,
+                            "end_bu":   _end_bu,
+                            "disapp_bu": _begin_bu + _prod_bu - _end_bu,
+                        })
 
-            if _disapp_rows:
-                _dd = pd.DataFrame(_disapp_rows)
-                _su_d, _sl_d = _auto_bu(_dd["disapp_bu"].max())
+            _plot_rows = ([r for r in _disapp_rows if r.get("disapp_bu") is not None] if not _is_wheat
+                          else [r for r in _disapp_rows if r["begin_bu"]])
+
+            if _plot_rows:
+                _dd = pd.DataFrame(_plot_rows)
+                _chart_col = "disapp_bu" if not _is_wheat else (
+                    "junaug_disapp" if _dd["disapp_bu"].isna().all() else "disapp_bu"
+                )
+                _dd_chart = _dd.dropna(subset=[_chart_col])
+                _su_d, _sl_d = (_auto_bu(_dd_chart[_chart_col].abs().max())
+                                if not _dd_chart.empty else (1e6, "M bu"))
 
                 fig_disapp = go.Figure()
-                fig_disapp.add_trace(go.Bar(
-                    x=_dd["year"].astype(str),
-                    y=_dd["disapp_bu"] / _su_d,
-                    marker_color=[ACCENT if y == _dd["year"].max() else "#64748b"
-                                  for y in _dd["year"]],
-                    name="Disappearance",
-                    hovertemplate="Disappearance: %{y:.2f} " + _sl_d + "<extra></extra>",
-                ))
+                if not _dd_chart.empty:
+                    fig_disapp.add_trace(go.Bar(
+                        x=_dd_chart["year"].astype(str),
+                        y=_dd_chart[_chart_col] / _su_d,
+                        marker_color=[ACCENT if y == _dd_chart["year"].max() else "#64748b"
+                                      for y in _dd_chart["year"]],
+                        name="Full-Year Disappearance" if _is_wheat else "Disappearance",
+                        hovertemplate="Disappearance: %{y:.2f} " + _sl_d + "<extra></extra>",
+                    ))
                 fig_disapp.add_trace(go.Scatter(
                     x=_dd["year"].astype(str),
                     y=_dd["prod_bu"] / _su_d,
                     mode="lines+markers",
                     line=dict(color="#f59e0b", width=2, dash="dot"),
                     marker=dict(color="#f59e0b", size=6),
-                    name="Production",
+                    name="Total Production",
                     hovertemplate="Production: %{y:.2f} " + _sl_d + "<extra></extra>",
                 ))
-                fig_disapp.add_trace(go.Scatter(
-                    x=_dd["year"].astype(str),
-                    y=(_dd["begin_bu"] + _dd["prod_bu"]) / _su_d,
-                    mode="lines+markers",
-                    line=dict(color="#60a5fa", width=1.5, dash="dash"),
-                    marker=dict(color="#60a5fa", size=5),
-                    name="Total Supply",
-                    hovertemplate="Total Supply: %{y:.2f} " + _sl_d + "<extra></extra>",
-                ))
+                if _is_wheat:
+                    fig_disapp.add_trace(go.Scatter(
+                        x=_dd["year"].astype(str),
+                        y=_dd["winter_bu"] / _su_d,
+                        mode="lines+markers",
+                        line=dict(color="#e0b800", width=1.5, dash="dot"),
+                        marker=dict(color="#e0b800", size=5),
+                        name="Winter Wheat (Jun–Aug)",
+                        hovertemplate="Winter Wheat: %{y:.2f} " + _sl_d + "<extra></extra>",
+                    ))
+                    fig_disapp.add_trace(go.Scatter(
+                        x=_dd["year"].astype(str),
+                        y=_dd["spring_bu"] / _su_d,
+                        mode="lines+markers",
+                        line=dict(color="#34d399", width=1.5, dash="dot"),
+                        marker=dict(color="#34d399", size=5),
+                        name="Spring+Durum (Aug–Sep)",
+                        hovertemplate="Spring/Durum: %{y:.2f} " + _sl_d + "<extra></extra>",
+                    ))
+                    fig_disapp.add_trace(go.Scatter(
+                        x=_dd["year"].astype(str),
+                        y=_dd["junaug_supply"] / _su_d,
+                        mode="lines+markers",
+                        line=dict(color="#60a5fa", width=2, dash="dash"),
+                        marker=dict(color="#60a5fa", size=6),
+                        name="Jun–Aug Supply (Jun 1 + Winter)",
+                        hovertemplate="Jun–Aug Supply: %{y:.2f} " + _sl_d + "<extra></extra>",
+                    ))
+                else:
+                    fig_disapp.add_trace(go.Scatter(
+                        x=_dd["year"].astype(str),
+                        y=(_dd["begin_bu"] + _dd["prod_bu"]) / _su_d,
+                        mode="lines+markers",
+                        line=dict(color="#60a5fa", width=1.5, dash="dash"),
+                        marker=dict(color="#60a5fa", size=5),
+                        name="Total Supply",
+                        hovertemplate="Total Supply: %{y:.2f} " + _sl_d + "<extra></extra>",
+                    ))
                 fig_disapp.update_layout(
                     paper_bgcolor=DARK, plot_bgcolor=SURFACE,
                     font=dict(color=TEXT, family="Arial"),
@@ -5418,23 +5530,45 @@ def main():
                 _chart(fig_disapp, use_container_width=True, key="stk_disapp_chart",
                        config={"displayModeBar": False})
 
-                _dd_disp = pd.DataFrame({
-                    "Mkt Year": _dd["year"].map(lambda y: f"Sep {y}–{y+1}"),
-                    "Beg Stocks (M bu)":   (_dd["begin_bu"] / 1e6).map(lambda v: f"{v:,.0f}"),
-                    "Production (M bu)":   (_dd["prod_bu"]  / 1e6).map(lambda v: f"{v:,.0f}"),
-                    "Total Supply (M bu)": ((_dd["begin_bu"]+_dd["prod_bu"])/1e6).map(lambda v: f"{v:,.0f}"),
-                    "End Stocks (M bu)":   (_dd["end_bu"]   / 1e6).map(lambda v: f"{v:,.0f}"),
-                    "Disappearance (M bu)":(_dd["disapp_bu"]/ 1e6).map(lambda v: f"{v:,.0f}"),
-                    "Disapp % of Supply":  (_dd["disapp_bu"]/(_dd["begin_bu"]+_dd["prod_bu"])*100
-                                           ).map(lambda v: f"{v:.1f}%"),
-                })
-                st.dataframe(_dd_disp, use_container_width=True, hide_index=True)
-                st.caption(
-                    f"Marketing year runs Sep 1 to Aug 31. Most recent year shown: Sep {_disapp_years[-1]}–{_disapp_years[-1]+1}. "
-                    "Source: USDA NASS Grain Stocks (Sep 1) and Crop Production."
-                )
+                if _is_wheat:
+                    _dd_disp = pd.DataFrame({
+                        "Mkt Year":                   _dd["year"].map(lambda y: f"Jun {y}–{y+1}"),
+                        "Jun 1 Beg (M bu)":           (_dd["begin_bu"]      / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Winter Wheat (M bu)":        (_dd["winter_bu"]     / 1e6).map(lambda v: f"{v:,.0f}" if v else "—"),
+                        "Jun–Aug Supply (M bu)": (_dd["junaug_supply"] / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Sep 1 Stocks (M bu)":        _dd["sep_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v and not pd.isna(v)) else "—"),
+                        "Jun–Aug Disapp (M bu)": _dd["junaug_disapp"].map(lambda v: f"{v/1e6:,.0f}" if (v is not None and not pd.isna(v)) else "—"),
+                        "Spring+Durum (M bu)":        (_dd["spring_bu"]     / 1e6).map(lambda v: f"{v:,.0f}" if v else "—"),
+                        "Total Prod (M bu)":          (_dd["prod_bu"]       / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Jun 1 End (M bu)":           _dd["end_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v and not pd.isna(v)) else "—"),
+                        "Full-Yr Disapp (M bu)":      _dd["disapp_bu"].map(lambda v: f"{v/1e6:,.0f}" if (v is not None and not pd.isna(v)) else "—"),
+                    })
+                    st.dataframe(_dd_disp, use_container_width=True, hide_index=True)
+                    st.caption(
+                        "Wheat marketing year: Jun 1 → May 31.  "
+                        "Jun–Aug Supply = Jun 1 Old Crop Stocks + Winter Wheat Production (harvested Jun–Jul).  "
+                        "Once Sep 1 stocks publish, Jun–Aug Disappearance = Jun–Aug Supply − Sep 1 Stocks.  "
+                        "Full-Year Disappearance = Jun 1 Beg + Total Production − Jun 1 End (following year).  "
+                        "Source: USDA NASS Grain Stocks & Crop Production."
+                    )
+                else:
+                    _dd_disp = pd.DataFrame({
+                        "Mkt Year": _dd["year"].map(lambda y: f"Sep {y}–{y+1}"),
+                        "Beg Stocks (M bu)":   (_dd["begin_bu"] / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Production (M bu)":   (_dd["prod_bu"]  / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Total Supply (M bu)": ((_dd["begin_bu"]+_dd["prod_bu"])/1e6).map(lambda v: f"{v:,.0f}"),
+                        "End Stocks (M bu)":   (_dd["end_bu"]   / 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Disappearance (M bu)":(_dd["disapp_bu"]/ 1e6).map(lambda v: f"{v:,.0f}"),
+                        "Disapp % of Supply":  (_dd["disapp_bu"]/(_dd["begin_bu"]+_dd["prod_bu"])*100
+                                               ).map(lambda v: f"{v:.1f}%"),
+                    })
+                    st.dataframe(_dd_disp, use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"Marketing year runs Sep 1 to Aug 31. Most recent year shown: Sep {_disapp_years[-1]}–{_disapp_years[-1]+1}. "
+                        "Source: USDA NASS Grain Stocks (Sep 1) and Crop Production."
+                    )
             else:
-                st.info("Insufficient Sep 1 stocks data to compute disappearance for this crop/year range.")
+                st.info("Insufficient stocks data to compute disappearance for this crop/year range.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # ACREAGE SUMMARY TAB
