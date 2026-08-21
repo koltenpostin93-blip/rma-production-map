@@ -5550,23 +5550,54 @@ def main():
 
             if _plot_rows:
                 _dd = pd.DataFrame(_plot_rows)
-                _chart_col = "disapp_bu" if not _is_wheat else (
-                    "junaug_disapp" if _dd["disapp_bu"].isna().all() else "disapp_bu"
-                )
-                _dd_chart = _dd.dropna(subset=[_chart_col])
-                _su_d, _sl_d = (_auto_bu(_dd_chart[_chart_col].abs().max())
+
+                # For wheat: always use junaug_disapp for bars (always computed, even for
+                # the current year) so 2026 never drops out. Show full-year disapp as a
+                # separate line overlay when available.
+                # For other crops: use disapp_bu; drop rows where it's None.
+                if _is_wheat:
+                    _dd_chart = _dd.dropna(subset=["junaug_disapp"])
+                    _ref_col  = "junaug_disapp"
+                else:
+                    _dd_chart = _dd.dropna(subset=["disapp_bu"])
+                    _ref_col  = "disapp_bu"
+
+                _su_d, _sl_d = (_auto_bu(_dd_chart[_ref_col].abs().max())
                                 if not _dd_chart.empty else (1e6, "M bu"))
 
                 fig_disapp = go.Figure()
                 if not _dd_chart.empty:
+                    _bar_colors = [ACCENT if y == _dd_chart["year"].max() else "#64748b"
+                                   for y in _dd_chart["year"]]
+                    # Hatched (lighter) fill for estimated bars
+                    _bar_opacity = [0.55 if r else 1.0
+                                    for r in _dd_chart["is_est"].tolist()]
                     fig_disapp.add_trace(go.Bar(
                         x=_dd_chart["year"].astype(str),
-                        y=_dd_chart[_chart_col] / _su_d,
-                        marker_color=[ACCENT if y == _dd_chart["year"].max() else "#64748b"
-                                      for y in _dd_chart["year"]],
-                        name="Full-Year Disappearance" if _is_wheat else "Disappearance",
-                        hovertemplate="Disappearance: %{y:.2f} " + _sl_d + "<extra></extra>",
+                        y=_dd_chart[_ref_col] / _su_d,
+                        marker_color=_bar_colors,
+                        opacity=1.0,
+                        marker_opacity=_bar_opacity,
+                        name="Jun–Aug Disappearance" if _is_wheat else "Disappearance",
+                        hovertemplate=("%{y:.2f} " + _sl_d +
+                                       " (est.)<extra></extra>" if _is_wheat else
+                                       "%{y:.2f} " + _sl_d + "<extra></extra>"),
                     ))
+
+                # Full-year disappearance overlay for wheat (only years where it's available)
+                if _is_wheat:
+                    _dd_fy = _dd.dropna(subset=["disapp_bu"])
+                    if not _dd_fy.empty:
+                        fig_disapp.add_trace(go.Scatter(
+                            x=_dd_fy["year"].astype(str),
+                            y=_dd_fy["disapp_bu"] / _su_d,
+                            mode="lines+markers",
+                            line=dict(color="#e879f9", width=2),
+                            marker=dict(color="#e879f9", size=7, symbol="diamond"),
+                            name="Full-Year Disappearance",
+                            hovertemplate="Full-Yr Disapp: %{y:.2f} " + _sl_d + "<extra></extra>",
+                        ))
+
                 fig_disapp.add_trace(go.Scatter(
                     x=_dd["year"].astype(str),
                     y=_dd["prod_bu"] / _su_d,
