@@ -7452,7 +7452,12 @@ def main():
             stocks = stocks[["year", "state_alpha", "commodity_desc", "value_bu"]].dropna()
 
             prod = pd.read_csv(prod_path, dtype=str)
-            prod = prod[(prod["commodity_desc"].isin(GRAINS)) & (prod["reference_period_desc"] == "YEAR")].copy()
+            prod = prod[
+                (prod["commodity_desc"].isin(GRAINS)) &
+                (prod["reference_period_desc"] == "YEAR") &
+                (prod["prodn_practice_desc"] == "ALL PRODUCTION PRACTICES") &
+                (prod["class_desc"] == "ALL CLASSES")
+            ].copy()
             prod["value_bu"] = pd.to_numeric(prod["Value"].str.replace(",", ""), errors="coerce")
             prod = prod[["year", "state_alpha", "commodity_desc", "value_bu"]].dropna()
 
