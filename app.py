@@ -3744,7 +3744,7 @@ def main():
         geo        = load_geojson()
         fips_lk    = build_fips_lookup(geo)
         centroids  = build_centroid_lookup(geo)
-        logo_50yr  = load_logo(LOGO_TRANS)
+        logo_50yr  = load_logo(LOGO_50YR)
         logo_trans = load_logo(LOGO_TRANS)
         logo_full  = load_logo(LOGO_FULL)
 
